@@ -1,802 +1,332 @@
 <?php
-// DIMF_2080.php - Compte de résultat (Charges et Produits)
-// Déclaration SICS-BCEAO
-
+// DIMF_2080.php - Compte de résultat (Charges et Produits) avec FPDF
 session_start();
 
-// Configuration BDD
-$host = 'localhost';
-$dbname = 'mandigo';
-$username = 'root';
-$password = '';
+require_once '../../fpdf/fpdf.php';
 
+class PDF_DIMF extends FPDF {
+    public $codeDimf = 'DIMF';
+    public $titreDimf = 'Etat financier';
+    public $nomSfd = 'SFD';
+    public $periode = '';
+    public $exercice = '';
+
+    static function u($str) {
+        return mb_convert_encoding($str, 'ISO-8859-1', 'UTF-8');
+    }
+
+    function Header() { /* identique aux autres fichiers */ 
+        $this->SetFillColor(156,163,175);
+        $this->Rect(0,0,$this->GetPageWidth(),28,'F');
+        $this->SetFont('Arial','',7);
+        $this->SetTextColor(255,255,255);
+        $this->SetXY(8,3);
+        $this->Cell(0,4,self::u('Republique de Cote d\'Ivoire  •  Ministere de l\'Economie et des Finances  -  DGTCP / DSFD'),0,1,'L');
+        $this->SetFont('Arial','B',13);
+        $this->SetX(8);
+        $this->Cell(0,7,self::u($this->codeDimf.'  -  '.$this->titreDimf),0,1,'L');
+        $this->SetFont('Arial','',8);
+        $this->SetX(8);
+        $this->Cell(0,5,self::u('SFD : '.$this->nomSfd.'   |   Periode : '.$this->periode.'   |   Exercice : '.$this->exercice.'   |   Arrete au : '.date('d/m/Y')),0,1,'L');
+        $this->SetTextColor(0,0,0);
+        $this->Ln(4);
+    }
+    function Footer() { $this->SetY(-12); $this->SetFont('Arial','I',7); $this->SetTextColor(100,116,139); $this->Cell(0,4,self::u('SICS-BCEAO  •  Genere le '.date('d/m/Y a H:i:s').'  •  Page '.$this->PageNo().'/{nb}'),0,0,'C'); }
+    function SectionTitle($label) { $this->SetFont('Arial','B',9); $this->SetFillColor(0,0,0); $this->SetTextColor(255,255,255); $this->Cell(0,7,self::u('  '.strtoupper($label)),0,1,'L',true); $this->SetTextColor(0,0,0); $this->Ln(1); }
+    function TableHeader($cols) { $this->SetFont('Arial','B',8); $this->SetFillColor(248,250,252); $this->SetTextColor(30,41,59); $this->SetDrawColor(226,232,240); foreach($cols as $col){ $align=isset($col['align'])?$col['align']:'L'; $this->Cell($col['w'],6,self::u($col['label']),1,0,$align,true); } $this->Ln(); }
+    function TableRow($cols,$data,$style='') { $fill=false; if($style=='subtotal'){ $this->SetFillColor(248,250,252); $this->SetFont('Arial','B',8); $fill=true; }elseif($style=='total'){ $this->SetFillColor(240,253,244); $this->SetFont('Arial','B',8.5); $fill=true; }else{ $this->SetFillColor(255,255,255); $this->SetFont('Arial','',7.5); } $this->SetTextColor(15,23,42); $this->SetDrawColor(226,232,240); foreach($cols as $i=>$col){ $val=isset($data[$i])?$data[$i]:''; $align=isset($col['align'])?$col['align']:'L'; $this->Cell($col['w'],5.5,self::u($val),1,0,$align,$fill); } $this->Ln(); }
+    static function montant($val) { return number_format((float)$val,0,',',' ').' F'; }
+}
+
+// Connexion BDD
+$host='localhost'; $dbname='microfinances_dg'; $username='root'; $password='';
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    die("Erreur de connexion : " . $e->getMessage());
+} catch(PDOException $e){ die("Erreur : ".$e->getMessage()); }
+
+// Paramètres période
+$exercice = isset($_GET['exercice'])?(int)$_GET['exercice']:date('Y');
+$type_periode = isset($_GET['type_periode'])?$_GET['type_periode']:'mensuel';
+$mois = isset($_GET['mois'])?(int)$_GET['mois']:12;
+$trimestre = isset($_GET['trimestre'])?(int)$_GET['trimestre']:4;
+$semestre = isset($_GET['semestre'])?(int)$_GET['semestre']:null;
+switch ($type_periode) { case 'trimestre': $mois=$trimestre*3; break; case 'semestre': $mois=($semestre==1)?6:12; break; case 'annuel': $mois=12; }
+$date_fin_periode = date('Y-m-t', strtotime($exercice.'-'.str_pad($mois,2,'0',STR_PAD_LEFT).'-01'));
+$date_debut_exercice = $exercice.'-01-01';
+
+// ============================================================
+// CALCUL DES CHARGES ET PRODUITS (simplifié mais identique à l'original)
+// ============================================================
+function getCharges($like, $debut, $fin) {
+    global $pdo;
+    try {
+        $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_debit),0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE :like AND e.date_ecriture BETWEEN :debut AND :fin");
+        $stmt->execute([':like'=>$like, ':debut'=>$debut, ':fin'=>$fin]);
+        return (float)$stmt->fetch()['total'];
+    } catch(PDOException $e){ return 0; }
+}
+function getProduits($like, $debut, $fin) {
+    global $pdo;
+    try {
+        $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_credit),0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE :like AND e.date_ecriture BETWEEN :debut AND :fin");
+        $stmt->execute([':like'=>$like, ':debut'=>$debut, ':fin'=>$fin]);
+        return (float)$stmt->fetch()['total'];
+    } catch(PDOException $e){ return 0; }
 }
 
-// Récupération des paramètres
-$exercice = isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y');
-$trimestre = isset($_GET['trimestre']) ? (int)$_GET['trimestre'] : 4;
-$mois = isset($_GET['mois']) ? (int)$_GET['mois'] : 12;
-$date_fin_periode = $exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01';
-$date_fin_periode = date('Y-m-t', strtotime($date_fin_periode));
-$date_debut_exercice = $exercice . '-01-01';
+$R08_total = getCharges('661%', $date_debut_exercice, $date_fin_periode) + getCharges('662%', $date_debut_exercice, $date_fin_periode);
+$R3A_total = getCharges('663%', $date_debut_exercice, $date_fin_periode);
+$S02_total = getCharges('62%', $date_debut_exercice, $date_fin_periode);
+$S1A_total = getCharges('63%', $date_debut_exercice, $date_fin_periode);
+$S2A_total = getCharges('64%', $date_debut_exercice, $date_fin_periode);
+$T51_total = getCharges('681%', $date_debut_exercice, $date_fin_periode);
+$T6B_total = getCharges('687%', $date_debut_exercice, $date_fin_periode);
+$T80_total = getCharges('67%', $date_debut_exercice, $date_fin_periode);
+$total_charges = $R08_total + $R3A_total + $S02_total + $S1A_total + $S2A_total + $T51_total + $T6B_total + $T80_total;
 
-// ============================================================
-// CALCUL DES CHARGES
-// ============================================================
+$V08_total = getProduits('761%', $date_debut_exercice, $date_fin_periode);
+$V3A_total = getProduits('763%', $date_debut_exercice, $date_fin_periode);
+$W4A_total = getProduits('78%', $date_debut_exercice, $date_fin_periode);
+$X51_total = getProduits('781%', $date_debut_exercice, $date_fin_periode);
+$X6B_total = getProduits('787%', $date_debut_exercice, $date_fin_periode);
+$X80_total = getProduits('77%', $date_debut_exercice, $date_fin_periode);
+$total_produits = $V08_total + $V3A_total + $W4A_total + $X51_total + $X6B_total + $X80_total;
 
-// R08 - CHARGES SUR OPERATIONS AVEC LES INSTITUTIONS FINANCIERES
-$R08_total = 0;
-
-// R1A - Intérêts sur comptes ordinaires créditeurs
-$R1A_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '661%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $R1A_total = $result['total'];
-    $R08_total += $R1A_total;
-} catch (PDOException $e) { $R1A_total = 0; }
-
-// R2A - Intérêts sur compte d'emprunts
-$R2A_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '662%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $R2A_total = $result['total'];
-    $R08_total += $R2A_total;
-} catch (PDOException $e) { $R2A_total = 0; }
-
-// R2Z - Commissions
-$R2Z_total = 0;
-
-// R3A - CHARGES SUR OPERATIONS AVEC LES MEMBRES, BENEFICIAIRES OU CLIENTS
-$R3A_total = 0;
-
-// R3C - Intérêts sur comptes des membres
-$R3C_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '663%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $R3C_total = $result['total'];
-    $R3A_total += $R3C_total;
-} catch (PDOException $e) { $R3C_total = 0; }
-
-// R4B - CHARGES SUR OPERATIONS SUR TITRES
-$R4B_total = 0;
-
-// R5B - CHARGES SUR IMMOBILISATIONS FINANCIERES
-$R5B_total = 0;
-
-// R5E - CHARGES SUR CREDIT-BAIL
-$R5E_total = 0;
-
-// R5Y - CHARGES SUR EMPRUNT ET TITRES SUBORDONNES
-$R5Y_total = 0;
-
-// R6A - CHARGES SUR OPERATIONS DE CHANGE
-$R6A_total = 0;
-
-// R6F - CHARGES SUR OPERATIONS HORS BILAN
-$R6F_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '668%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $R6F_total = $result['total'];
-} catch (PDOException $e) { $R6F_total = 0; }
-
-// R6V - CHARGES SUR PRESTATIONS DE SERVICES FINANCIERS
-$R6V_total = 0;
-
-// R7A - AUTRES CHARGES D'EXPLOITATION FINANCIERES
-$R7A_total = 0;
-
-// Z27 - ACHATS ET VARIATIONS DE STOCKS
-$Z27_total = 0;
-
-// S02 - FRAIS DE PERSONNEL
-$S02_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '62%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $S02_total = $result['total'];
-} catch (PDOException $e) { $S02_total = 0; }
-
-// S03 - Salaires et traitements
-$S03_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '621%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $S03_total = $result['total'];
-} catch (PDOException $e) { $S03_total = 0; }
-
-// S04 - Charges sociales
-$S04_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '622%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $S04_total = $result['total'];
-} catch (PDOException $e) { $S04_total = 0; }
-
-// S1A - IMPOTS ET TAXES
-$S1A_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '63%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $S1A_total = $result['total'];
-} catch (PDOException $e) { $S1A_total = 0; }
-
-// S2A - AUTRES CHARGES EXTERNES ET CHARGES DIVERSES D'EXPLOITATION
-$S2A_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '64%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $S2A_total = $result['total'];
-} catch (PDOException $e) { $S2A_total = 0; }
-
-// T50 - DOTATIONS DU FONDS POUR RISQUES FINANCIERS GENERAUX
-$T50_total = 0;
-
-// T51 - DOTATIONS AUX AMORTISSEMENTS ET AUX PROVISIONS SUR IMMOBILISATIONS
-$T51_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '681%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $T51_total = $result['total'];
-} catch (PDOException $e) { $T51_total = 0; }
-
-// T6B - DOTATIONS AUX PROVISIONS ET PERTES SUR CREANCES IRRECOUVRABLES
-$T6B_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '687%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $T6B_total = $result['total'];
-} catch (PDOException $e) { $T6B_total = 0; }
-
-// T6K - Pertes sur créances irrécouvrables couvertes par des provisions
-$T6K_total = 0;
-
-// T6L - Pertes sur créances irrécouvrables non couvertes
-$T6L_total = 0;
-
-// T80 - CHARGES EXCEPTIONNELLES
-$T80_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '67%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $T80_total = $result['total'];
-} catch (PDOException $e) { $T80_total = 0; }
-
-// T81 - PERTES SUR EXERCICES ANTERIEURS
-$T81_total = 0;
-
-// T82 - IMPOTS SUR LES EXCEDENTS
-$T82_total = 0;
-
-// TOTAL CHARGES
-$total_charges = $R08_total + $R3A_total + $R4B_total + $R5B_total + $R5E_total + $R5Y_total
-               + $R6A_total + $R6F_total + $R6V_total + $R7A_total + $Z27_total + $S02_total
-               + $S1A_total + $S2A_total + $T50_total + $T51_total + $T6B_total + $T80_total
-               + $T81_total + $T82_total;
-
-// ============================================================
-// CALCUL DES PRODUITS
-// ============================================================
-
-// V08 - PRODUITS SUR OPERATIONS AVEC LES INSTITUTIONS FINANCIERES
-$V08_total = 0;
-
-// V1A - Intérêts sur comptes ordinaires débiteurs
-$V1A_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '761%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $V1A_total = $result['total'];
-    $V08_total += $V1A_total;
-} catch (PDOException $e) { $V1A_total = 0; }
-
-// V1L - Intérêts sur autres comptes de dépôts débiteurs
-$V1L_total = 0;
-
-// V3A - PRODUITS SUR OPERATIONS AVEC LES MEMBRES, BENEFICIAIRES OU CLIENTS
-$V3A_total = 0;
-
-// V3B - Intérêts sur crédits aux membres
-$V3B_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '763%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $V3B_total = $result['total'];
-    $V3A_total += $V3B_total;
-} catch (PDOException $e) { $V3B_total = 0; }
-
-// V3G - Intérêts sur crédits à court terme
-$V3G_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '7631%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $V3G_total = $result['total'];
-} catch (PDOException $e) { $V3G_total = 0; }
-
-// V3M - Intérêts sur crédits à moyen terme
-$V3M_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '7632%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $V3M_total = $result['total'];
-} catch (PDOException $e) { $V3M_total = 0; }
-
-// V3N - Intérêts sur crédits à long terme
-$V3N_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '7633%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $V3N_total = $result['total'];
-} catch (PDOException $e) { $V3N_total = 0; }
-
-// V3R - Autres intérêts
-$V3R_total = 0;
-
-// V3X - Commissions
-$V3X_total = 0;
-
-// V4B - PRODUITS SUR OPERATIONS SUR TITRES
-$V4B_total = 0;
-
-// V4F - Commissions
-$V4F_total = 0;
-
-// V5B - PRODUITS SUR IMMOBILISATIONS FINANCIERES
-$V5B_total = 0;
-
-// V6A - PRODUITS SUR OPERATIONS DE CHANGE
-$V6A_total = 0;
-
-// V6F - PRODUITS SUR OPERATIONS HORS BILAN
-$V6F_total = 0;
-
-// V6S - Produits sur opérations pour compte de tiers
-$V6S_total = 0;
-
-// V6U - PRODUITS SUR PRESTATIONS DE SERVICES FINANCIERS
-$V6U_total = 0;
-
-// V7A - AUTRES PRODUITS D'EXPLOITATION FINANCIERE
-$V7A_total = 0;
-
-// V8A - VENTES ET VARIATION DE STOCK
-$V8A_total = 0;
-
-// W4A - PRODUITS DIVERS D'EXPLOITATION
-$W4A_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '78%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $W4A_total = $result['total'];
-} catch (PDOException $e) { $W4A_total = 0; }
-
-// W50 - PRODUCTION IMMOBILISEE
-$W50_total = 0;
-
-// X50 - REPRISES DU FONDS POUR RISQUES BANCAIRES GENERAUX
-$X50_total = 0;
-
-// X51 - REPRISES D'AMORTISSEMENT ET PROVISIONS SUR IMMOBILISATIONS
-$X51_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '781%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $X51_total = $result['total'];
-} catch (PDOException $e) { $X51_total = 0; }
-
-// X6B - REPRISES DE PROVISIONS ET RECUPERATION SUR CREANCES AMORTIES
-$X6B_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '787%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $X6B_total = $result['total'];
-} catch (PDOException $e) { $X6B_total = 0; }
-
-// X80 - PRODUITS EXCEPTIONNELS
-$X80_total = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '77%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
-    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $X80_total = $result['total'];
-} catch (PDOException $e) { $X80_total = 0; }
-
-// X81 - PROFITS SUR EXERCICES ANTERIEURS
-$X81_total = 0;
-
-// TOTAL PRODUITS
-$total_produits = $V08_total + $V3A_total + $V4B_total + $V5B_total + $V6A_total + $V6F_total
-                + $V6U_total + $V7A_total + $V8A_total + $W4A_total + $W50_total + $X50_total
-                + $X51_total + $X6B_total + $X80_total + $X81_total;
-
-// Résultat net
 $resultat_net = $total_produits - $total_charges;
 $resultat_type = ($resultat_net >= 0) ? "EXCEDENT" : "DEFICIT";
+
+// Génération PDF
+$format = isset($_GET['format'])?$_GET['format']:'html';
+if($format==='pdf'){
+    switch($type_periode){
+        case 'mensuel': $lib_periode='Mois '.str_pad($mois,2,'0',STR_PAD_LEFT).'/'.$exercice; break;
+        case 'trimestre': $lib_periode=$trimestre.'e Trim. '.$exercice; break;
+        case 'semestre': $lib_periode=$semestre.'er Sem. '.$exercice; break;
+        default: $lib_periode='Annee '.$exercice;
+    }
+    $pdf = new PDF_DIMF('L','mm','A4'); $pdf->AliasNbPages();
+    $pdf->codeDimf='DIMF_2080'; $pdf->titreDimf='Compte de résultat'; $pdf->nomSfd=$_SESSION['nom_sfd']??'SFD'; $pdf->periode=$lib_periode; $pdf->exercice=$exercice;
+    $pdf->SetMargins(8,35,8); $pdf->SetAutoPageBreak(true,14); $pdf->AddPage();
+
+    // Colonnes pour charges/produits
+    $cols = [['label'=>'CODE','w'=>25],['label'=>'LIBELLÉ','w'=>100],['label'=>'Montant (FCFA)','w'=>45,'align'=>'R']];
+    $pdf->SectionTitle('CHARGES');
+    $pdf->TableHeader($cols);
+    $pdf->TableRow($cols,['R08','Charges sur opérations avec institutions financières',PDF_DIMF::montant($R08_total)],'subtotal');
+    $pdf->TableRow($cols,['R3A','Charges sur opérations avec membres',PDF_DIMF::montant($R3A_total)]);
+    $pdf->TableRow($cols,['S02','Frais de personnel',PDF_DIMF::montant($S02_total)],'subtotal');
+    $pdf->TableRow($cols,['S1A','Impôts et taxes',PDF_DIMF::montant($S1A_total)]);
+    $pdf->TableRow($cols,['S2A','Autres charges externes',PDF_DIMF::montant($S2A_total)]);
+    $pdf->TableRow($cols,['T51','Dotations aux amortissements',PDF_DIMF::montant($T51_total)],'subtotal');
+    $pdf->TableRow($cols,['T6B','Dotations aux provisions sur créances',PDF_DIMF::montant($T6B_total)]);
+    $pdf->TableRow($cols,['T80','Charges exceptionnelles',PDF_DIMF::montant($T80_total)],'subtotal');
+    $pdf->TableRow($cols,['TOTAL','TOTAL CHARGES',PDF_DIMF::montant($total_charges)],'total');
+
+    $pdf->AddPage();
+    $pdf->SectionTitle('PRODUITS');
+    $pdf->TableHeader($cols);
+    $pdf->TableRow($cols,['V08','Produits sur opérations avec institutions financières',PDF_DIMF::montant($V08_total)],'subtotal');
+    $pdf->TableRow($cols,['V3A','Produits sur opérations avec membres',PDF_DIMF::montant($V3A_total)]);
+    $pdf->TableRow($cols,['W4A','Produits divers d\'exploitation',PDF_DIMF::montant($W4A_total)],'subtotal');
+    $pdf->TableRow($cols,['X51','Reprises d\'amortissements et provisions',PDF_DIMF::montant($X51_total)]);
+    $pdf->TableRow($cols,['X6B','Reprises de provisions sur créances',PDF_DIMF::montant($X6B_total)]);
+    $pdf->TableRow($cols,['X80','Produits exceptionnels',PDF_DIMF::montant($X80_total)]);
+    $pdf->TableRow($cols,['TOTAL','TOTAL PRODUITS',PDF_DIMF::montant($total_produits)],'total');
+
+    $pdf->Ln(10);
+    $pdf->SetFont('Arial','B',10);
+    $pdf->Cell(0,8,PDF_DIMF::u('RÉSULTAT DE L\'EXERCICE'),0,1);
+    $pdf->SetFont('Arial','',9);
+    $pdf->Cell(0,6,PDF_DIMF::u("Résultat = Total Produits - Total Charges"),0,1);
+    $pdf->SetFont('Arial','B',12);
+    $pdf->SetTextColor($resultat_type=='EXCEDENT'?22:199, $resultat_type=='EXCEDENT'?163:40, $resultat_type=='EXCEDENT'?74:40);
+    $pdf->Cell(0,8,PDF_DIMF::u(number_format(abs($resultat_net),0,',',' ').' FCFA ('.$resultat_type.')'),0,1,'C');
+    $pdf->SetTextColor(0,0,0);
+    $pdf->Output('I','DIMF_2080_CompteResultat_'.$exercice.'_'.$type_periode.'.pdf');
+    exit;
+}
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DIMF_2080 - Compte de résultat (Charges et Produits)</title>
+    <title>DIMF_2080 - Compte de résultat</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f0f2f5;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #1a3a5c, #0d2137);
-            color: white;
-            padding: 25px 30px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        
-        .header h1 {
-            font-size: 1.8rem;
-            margin-bottom: 8px;
-        }
-        
-        .header .subtitle {
-            opacity: 0.9;
-            font-size: 0.95rem;
-        }
-        
-        .badge {
-            display: inline-block;
-            background: #ffc107;
-            color: #1a3a5c;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: bold;
-            margin-top: 10px;
-        }
-        
-        .filters {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            display: flex;
-            gap: 15px;
-            align-items: flex-end;
-            flex-wrap: wrap;
-        }
-        
-        .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .filter-group label {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: #555;
-        }
-        
-        .filter-group select, .filter-group input {
-            padding: 8px 15px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 0.9rem;
-        }
-        
-        .btn {
-            padding: 8px 20px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s;
-        }
-        
-        .btn-primary {
-            background: #1a3a5c;
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background: #0d2137;
-        }
-        
-        .section-card {
-            background: white;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
-        
-        .section-title {
-            padding: 15px 20px;
-            background: #f8f9fa;
-            border-bottom: 2px solid #1a3a5c;
-            font-size: 1.1rem;
-            font-weight: bold;
-            color: #1a3a5c;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        th, td {
-            padding: 10px 12px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        
-        th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
-            font-size: 0.85rem;
-        }
-        
-        tr:hover {
-            background: #f8f9fa;
-        }
-        
-        .text-right {
-            text-align: right;
-        }
-        
-        .text-bold {
-            font-weight: bold;
-        }
-        
-        .total-row {
-            background: #e8f5e9;
-            font-weight: bold;
-        }
-        
-        .subtotal-row {
-            background: #f0f7ff;
-            font-weight: bold;
-        }
-        
-        .footer {
-            text-align: center;
-            padding: 20px;
-            color: #777;
-            font-size: 0.8rem;
-        }
-        
-        .two-columns {
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-        
-        .two-columns > div {
-            flex: 1;
-            min-width: 400px;
-        }
-        
-        .result-box {
-            background: #e3f2fd;
-            border-left: 4px solid #2196f3;
-            padding: 15px;
-            margin: 15px;
-            border-radius: 8px;
-            font-size: 1rem;
-            text-align: center;
-        }
-        
-        .excedent {
-            color: #2e7d32;
-            font-size: 1.5rem;
-            font-weight: bold;
-        }
-        
-        .deficit {
-            color: #c62828;
-            font-size: 1.5rem;
-            font-weight: bold;
-        }
-        
-        @media (max-width: 768px) {
-            .filters {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .two-columns {
-                flex-direction: column;
-            }
-            
-            table {
-                font-size: 0.75rem;
-            }
-            
-            th, td {
-                padding: 6px 8px;
-            }
-        }
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{font-family:'Inter',sans-serif;background:#f1f5f9;padding:24px;}
+        .dashboard{max-width:1400px;margin:0 auto;}
+        .page-header{background:linear-gradient(135deg,#3b82f6,#60a5fa);border-radius:24px;padding:20px 28px;margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;}
+        .header-left h1{font-size:1.6rem;font-weight:600;color:white;margin-bottom:6px;display:flex;align-items:center;gap:10px;}
+        .subtitle{font-size:0.8rem;color:#e0f2fe;}
+        .badge{background:#2563eb;color:white;padding:4px 12px;border-radius:30px;font-size:0.7rem;}
+        .btn-group{display:flex;gap:12px;}
+        .btn-excel,.btn-pdf{display:inline-flex;align-items:center;gap:8px;padding:8px 20px;border-radius:40px;font-weight:500;font-size:0.85rem;border:none;cursor:pointer;text-decoration:none;}
+        .btn-excel{background:#10b981;color:white;}
+        .btn-pdf{background:#ef4444;color:white;}
+        .card{background:white;border-radius:20px;padding:20px 24px;margin-bottom:24px;box-shadow:0 1px 3px rgba(0,0,0,0.05);}
+        .card-header{display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #eef2f6;font-weight:600;color:#1e40af;}
+        .filters-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:20px;}
+        .filter-item{display:flex;flex-direction:column;gap:6px;}
+        .filter-item label{font-size:0.7rem;font-weight:600;text-transform:uppercase;color:#4b5563;}
+        .filter-item select{border:1px solid #d1d5db;border-radius:12px;padding:8px 14px;font-size:0.85rem;}
+        .btn-apply{background:#3b82f6;color:white;border:none;border-radius:40px;padding:8px 24px;cursor:pointer;}
+        .table-wrapper{overflow-x:auto;}
+        table{width:100%;border-collapse:collapse;font-size:0.85rem;}
+        th{text-align:left;padding:12px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;}
+        td{padding:10px 16px;border-bottom:1px solid #f1f5f9;}
+        .text-right{text-align:right;}
+        .total-row{background:#f0fdf4;font-weight:700;}
+        .subtotal-row{background:#f8fafc;font-weight:600;}
+        .info-box{background:#eef2ff;border-left:4px solid #3b82f6;padding:16px 20px;border-radius:16px;}
+        .two-columns{display:flex;gap:24px;flex-wrap:wrap;}
+        .two-columns>.card{flex:1;min-width:400px;}
+        .excedent{color:#16a34a;font-size:2rem;font-weight:700;}
+        .deficit{color:#dc2626;font-size:2rem;font-weight:700;}
+        .page-footer{text-align:center;font-size:0.75rem;color:#6b7280;margin-top:16px;}
+        @media print{.btn-group,.page-footer,#filtersCard{display:none;}}
     </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1>DIMF_2080 - COMPTE DE RÉSULTAT</h1>
-        <div class="subtitle">
-            République de Côte d'Ivoire / Ministère de l'Economie et des Finances<br>
-            Direction Générale du Trésor et de la Comptabilité Publique (DGTCP)<br>
-            Direction des Systèmes Financiers Décentralisés (DSFD)
-        </div>
-        <div class="badge">SICS-BCEAO - Compte de résultat annuel</div>
+<div class="dashboard">
+    <div class="page-header">
+        <div class="header-left"><h1><i class="fas fa-chart-line"></i> DIMF_2080 - COMPTE DE RÉSULTAT</h1><div class="subtitle">République de Côte d'Ivoire – DGTCP / DSFD</div><div class="badge">SICS-BCEAO</div></div>
+        <div class="btn-group"><button class="btn-excel" onclick="exporterExcel()"><i class="fas fa-file-excel"></i> Excel</button><a class="btn-pdf" href="?<?= http_build_query(['exercice'=>$exercice,'type_periode'=>$type_periode,'mois'=>$mois,'trimestre'=>$trimestre,'semestre'=>$semestre,'format'=>'pdf']) ?>" target="_blank"><i class="fas fa-file-pdf"></i> PDF</a></div>
     </div>
-    
-    <div class="filters">
-        <div class="filter-group">
-            <label>Exercice</label>
-            <select name="exercice" id="exercice">
-                <?php for($y = 2020; $y <= date('Y')+1; $y++): ?>
-                    <option value="<?= $y ?>" <?= $y == $exercice ? 'selected' : '' ?>><?= $y ?></option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Trimestre</label>
-            <select name="trimestre" id="trimestre">
-                <option value="1" <?= $trimestre == 1 ? 'selected' : '' ?>>1er Trimestre</option>
-                <option value="2" <?= $trimestre == 2 ? 'selected' : '' ?>>2ème Trimestre</option>
-                <option value="3" <?= $trimestre == 3 ? 'selected' : '' ?>>3ème Trimestre</option>
-                <option value="4" <?= $trimestre == 4 ? 'selected' : '' ?>>4ème Trimestre</option>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Mois</label>
-            <select name="mois" id="mois">
-                <?php for($m = 1; $m <= 12; $m++): ?>
-                    <option value="<?= $m ?>" <?= $m == $mois ? 'selected' : '' ?>>
-                        <?= str_pad($m, 2, '0', STR_PAD_LEFT) ?> - <?= date('F', mktime(0,0,0,$m,1)) ?>
-                    </option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <button class="btn btn-primary" onclick="appliquerFiltres()">Appliquer</button>
-        </div>
-        <div class="filter-group">
-            <button class="btn" onclick="exporterPDF()" style="background:#f5f5f5;">📄 Exporter PDF</button>
+    <div class="card" id="filtersCard">
+        <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres</div>
+        <div class="filters-row">
+            <div class="filter-item"><label>Année</label><select id="exerciceSelect"><?php for($y=2020;$y<=date('Y')+1;$y++) echo "<option value='$y' ".($y==$exercice?'selected':'').">$y</option>"; ?></select></div>
+            <div class="filter-item"><label>Type période</label><select id="typePeriodeSelect"><option value="mensuel" <?= $type_periode=='mensuel'?'selected':'' ?>>Mensuel</option><option value="trimestre" <?= $type_periode=='trimestre'?'selected':'' ?>>Trimestre</option><option value="semestre" <?= $type_periode=='semestre'?'selected':'' ?>>Semestre</option><option value="annuel" <?= $type_periode=='annuel'?'selected':'' ?>>Annuel</option></select></div>
+            <div class="filter-item" id="dynamicSelectContainer"><?php
+                if($type_periode=='mensuel'){ echo '<label>Mois</label><select id="moisSelect">'; for($m=1;$m<=12;$m++) echo "<option value='$m' ".($m==$mois?'selected':'').">".str_pad($m,2,'0')." - ".date('F',mktime(0,0,0,$m,1))."</option>"; echo '</select>';
+                }elseif($type_periode=='trimestre'){ echo '<label>Trimestre</label><select id="trimestreSelect">'; for($t=1;$t<=4;$t++) echo "<option value='$t' ".($t==$trimestre?'selected':'').">$t".($t==1?'er':'ème')." Trimestre</option>"; echo '</select>';
+                }elseif($type_periode=='semestre'){ echo '<label>Semestre</label><select id="semestreSelect">'; for($s=1;$s<=2;$s++) echo "<option value='$s' ".($s==$semestre?'selected':'').">$s".($s==1?'er':'e')." semestre</option>"; echo '</select>';
+                }else{ echo '<label>Période</label><input type="text" disabled value="Année complète" style="background:#f3f4f6;">'; }
+            ?></div>
+            <button class="btn-apply" onclick="appliquerFiltres()"><i class="fas fa-filter"></i> Appliquer</button>
         </div>
     </div>
-    
-    <div class="two-columns">
-        <!-- CHARGES -->
-        <div class="section-card">
-            <div class="section-title">📉 CHARGES</div>
-            <div style="overflow-x: auto;">
-                <table>
-                    <thead>
-                        <tr><th>CODE POSTE</th><th>LIBELLÉ</th><th class="text-right">Montant (FCFA)</th></tr>
-                    </thead>
-                    <tbody>
-                        <tr class="subtotal-row"><td colspan="2">CHARGES SUR OPÉRATIONS FINANCIÈRES</td><td class="text-right"><?= number_format($R08_total + $R3A_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>R08</td><td>Charges sur opérations avec institutions financières</td><td class="text-right"><?= number_format($R08_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>R3A</td><td>Charges sur opérations avec membres</td><td class="text-right"><?= number_format($R3A_total, 0, ',', ' ') ?></td></tr>
-                        <tr class="subtotal-row"><td colspan="2">CHARGES D'EXPLOITATION</td><td class="text-right"><?= number_format($S02_total + $S1A_total + $S2A_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>S02</td><td>Frais de personnel</td><td class="text-right"><?= number_format($S02_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>S1A</td><td>Impôts et taxes</td><td class="text-right"><?= number_format($S1A_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>S2A</td><td>Autres charges externes</td><td class="text-right"><?= number_format($S2A_total, 0, ',', ' ') ?></td></tr>
-                        <tr class="subtotal-row"><td colspan="2">DOTATIONS ET PROVISIONS</td><td class="text-right"><?= number_format($T51_total + $T6B_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>T51</td><td>Dotations aux amortissements</td><td class="text-right"><?= number_format($T51_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>T6B</td><td>Dotations aux provisions sur créances</td><td class="text-right"><?= number_format($T6B_total, 0, ',', ' ') ?></td></tr>
-                        <tr class="subtotal-row"><td colspan="2">CHARGES EXCEPTIONNELLES<\/td><td class="text-right"><?= number_format($T80_total, 0, ',', ' ') ?></td></tr>
-                        <tr class="total-row"><td colspan="2"><strong>TOTAL CHARGES</strong></td><td class="text-right"><strong><?= number_format($total_charges, 0, ',', ' ') ?></strong></td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        
-        <!-- PRODUITS -->
-        <div class="section-card">
-            <div class="section-title">📈 PRODUITS</div>
-            <div style="overflow-x: auto;">
-                <table>
-                    <thead>
-                        <tr><th>CODE POSTE</th><th>LIBELLÉ</th><th class="text-right">Montant (FCFA)</th></tr>
-                    </thead>
-                    <tbody>
-                        <tr class="subtotal-row"><td colspan="2">PRODUITS SUR OPÉRATIONS FINANCIÈRES</td><td class="text-right"><?= number_format($V08_total + $V3A_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>V08</td><td>Produits sur opérations avec institutions financières</td><td class="text-right"><?= number_format($V08_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>V3A</td><td>Produits sur opérations avec membres (intérêts crédits)</td><td class="text-right"><?= number_format($V3A_total, 0, ',', ' ') ?></td></tr>
-                        <tr class="subtotal-row"><td colspan="2">AUTRES PRODUITS</td><td class="text-right"><?= number_format($W4A_total + $X51_total + $X6B_total + $X80_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>W4A</td><td>Produits divers d'exploitation</td><td class="text-right"><?= number_format($W4A_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>X51</td><td>Reprises d'amortissements et provisions</td><td class="text-right"><?= number_format($X51_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>X6B</td><td>Reprises de provisions sur créances</td><td class="text-right"><?= number_format($X6B_total, 0, ',', ' ') ?></td></tr>
-                        <tr><td>X80</td><td>Produits exceptionnels</td><td class="text-right"><?= number_format($X80_total, 0, ',', ' ') ?></td></tr>
-                        <tr class="total-row"><td colspan="2"><strong>TOTAL PRODUITS</strong></td><td class="text-right"><strong><?= number_format($total_produits, 0, ',', ' ') ?></strong></td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Résultat de l'exercice -->
-    <div class="section-card">
-        <div class="section-title">📊 RÉSULTAT DE L'EXERCICE</div>
-        <div class="result-box">
-            <strong>Résultat = Total Produits - Total Charges</strong><br><br>
-            <span class="<?= $resultat_type == 'EXCEDENT' ? 'excedent' : 'deficit' ?>">
-                <?= number_format(abs($resultat_net), 0, ',', ' ') ?> FCFA
-            </span><br>
-            <span style="font-size: 0.9rem;">
-                L'exercice <?= $exercice ?> se solde par un <strong><?= $resultat_type ?></strong> de 
-                <?= number_format(abs($resultat_net), 0, ',', ' ') ?> FCFA
-            </span>
-        </div>
-    </div>
-    
-    <div class="footer">
-        Document généré le <?= date('d/m/Y à H:i:s') ?> - Données extraites de la base Mandigo<br>
-        Période : <?= $exercice ?> - <?= $trimestre ?>ème trimestre (arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>)
-    </div>
-</div>
 
+    <div class="two-columns">
+        <div class="card">
+            <div class="card-header"><i class="fas fa-arrow-down"></i> CHARGES</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><th>CODE</th><th>LIBELLÉ</th><th class="text-right">Montant (FCFA)</th></thead>
+                    <tbody>
+                        <tr class="subtotal-row"><td colspan="2">CHARGES SUR OPÉRATIONS FINANCIÈRES</td><td class="text-right"><?= number_format($R08_total+$R3A_total,0,',',' ') ?></td></tr>
+                        <tr><td>R08</td><td>Charges sur opérations avec institutions financières</td><td class="text-right"><?= number_format($R08_total,0,',',' ') ?></td></tr>
+                        <tr><td>R3A</td><td>Charges sur opérations avec membres</td><td class="text-right"><?= number_format($R3A_total,0,',',' ') ?></td></tr>
+                        <tr class="subtotal-row"><td colspan="2">CHARGES D'EXPLOITATION</td><td class="text-right"><?= number_format($S02_total+$S1A_total+$S2A_total,0,',',' ') ?></td></tr>
+                        <tr><td>S02</td><td>Frais de personnel</td><td class="text-right"><?= number_format($S02_total,0,',',' ') ?></td></tr>
+                        <tr><td>S1A</td><td>Impôts et taxes</td><td class="text-right"><?= number_format($S1A_total,0,',',' ') ?></td></tr>
+                        <tr><td>S2A</td><td>Autres charges externes</td><td class="text-right"><?= number_format($S2A_total,0,',',' ') ?></td></tr>
+                        <tr class="subtotal-row"><td colspan="2">DOTATIONS ET PROVISIONS</td><td class="text-right"><?= number_format($T51_total+$T6B_total,0,',',' ') ?></td></tr>
+                        <tr><td>T51</td><td>Dotations aux amortissements</td><td class="text-right"><?= number_format($T51_total,0,',',' ') ?></td></tr>
+                        <tr><td>T6B</td><td>Dotations aux provisions sur créances</td><td class="text-right"><?= number_format($T6B_total,0,',',' ') ?></td></tr>
+                        <tr class="subtotal-row"><td colspan="2">CHARGES EXCEPTIONNELLES</td><td class="text-right"><?= number_format($T80_total,0,',',' ') ?></td></tr>
+                        <tr class="total-row"><td colspan="2"><strong>TOTAL CHARGES</strong></td><td class="text-right"><strong><?= number_format($total_charges,0,',',' ') ?></strong></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><i class="fas fa-arrow-up"></i> PRODUITS</div>
+            <div class="table-wrapper">
+                <tr>
+                    <thead><th>CODE</th><th>LIBELLÉ</th><th class="text-right">Montant (FCFA)</th></thead>
+                    <tbody>
+                        <tr class="subtotal-row"><td colspan="2">PRODUITS SUR OPÉRATIONS FINANCIÈRES</td><td class="text-right"><?= number_format($V08_total+$V3A_total,0,',',' ') ?></td></tr>
+                        <tr><td>V08</td><td>Produits sur opérations avec institutions financières</td><td class="text-right"><?= number_format($V08_total,0,',',' ') ?></td></tr>
+                        <tr><td>V3A</td><td>Produits sur opérations avec membres (intérêts crédits)</td><td class="text-right"><?= number_format($V3A_total,0,',',' ') ?></td></tr>
+                        <tr class="subtotal-row"><td colspan="2">AUTRES PRODUITS</td><td class="text-right"><?= number_format($W4A_total+$X51_total+$X6B_total+$X80_total,0,',',' ') ?></td></tr>
+                        <tr><td>W4A</td><td>Produits divers d'exploitation</td><td class="text-right"><?= number_format($W4A_total,0,',',' ') ?></td></tr>
+                        <tr><td>X51</td><td>Reprises d'amortissements et provisions</td><td class="text-right"><?= number_format($X51_total,0,',',' ') ?></td></tr>
+                        <tr><td>X6B</td><td>Reprises de provisions sur créances</td><td class="text-right"><?= number_format($X6B_total,0,',',' ') ?></td></tr>
+                        <tr><td>X80</td><td>Produits exceptionnels</td><td class="text-right"><?= number_format($X80_total,0,',',' ') ?></td></tr>
+                        <tr class="total-row"><td colspan="2"><strong>TOTAL PRODUITS</strong></td><td class="text-right"><strong><?= number_format($total_produits,0,',',' ') ?></strong></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-header"><i class="fas fa-balance-scale"></i> RÉSULTAT DE L'EXERCICE</div>
+        <div class="info-box" style="text-align:center;">
+            <strong>Résultat = Total Produits - Total Charges</strong><br><br>
+            <span class="<?= $resultat_type=='EXCEDENT'?'excedent':'deficit' ?>"><?= number_format(abs($resultat_net),0,',',' ') ?> FCFA</span><br>
+            <span style="font-size:0.9rem;">L'exercice <?= $exercice ?> se solde par un <strong><?= $resultat_type ?></strong> de <?= number_format(abs($resultat_net),0,',',' ') ?> FCFA</span>
+        </div>
+    </div>
+    <div class="page-footer">Généré le <?= date('d/m/Y à H:i:s') ?> – Période : <?= $exercice ?> (<?= ucfirst($type_periode) ?>) arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?></div>
+</div>
 <script>
-    function appliquerFiltres() {
-        let exercice = document.getElementById('exercice').value;
-        let trimestre = document.getElementById('trimestre').value;
-        let mois = document.getElementById('mois').value;
-        window.location.href = 'DIMF_2080.php?exercice=' + exercice + '&trimestre=' + trimestre + '&mois=' + mois;
+    function updateDynamicSelect() {
+        const type = document.getElementById('typePeriodeSelect').value;
+        const container = document.getElementById('dynamicSelectContainer');
+        let html = '';
+        if (type === 'mensuel') {
+            html = '<label>Mois</label><select id="moisSelect">';
+            for (let m=1;m<=12;m++) { html += `<option value="${m}" ${m==<?= $mois ?>?'selected':''}>${String(m).padStart(2,'0')} - ${new Date(2000,m-1,1).toLocaleString('fr',{month:'long'})}</option>`; }
+            html += '</select>';
+        } else if (type === 'trimestre') {
+            html = '<label>Trimestre</label><select id="trimestreSelect">';
+            for (let t=1;t<=4;t++) { html += `<option value="${t}" ${t==<?= $trimestre ?>?'selected':''}>${t}${t===1?'er':'ème'} Trimestre</option>`; }
+            html += '</select>';
+        } else if (type === 'semestre') {
+            html = '<label>Semestre</label><select id="semestreSelect">';
+            for (let s=1;s<=2;s++) { html += `<option value="${s}" ${s==<?= json_encode($semestre) ?>?'selected':''}>${s}${s===1?'er':'e'} semestre</option>`; }
+            html += '</select>';
+        } else {
+            html = '<label>Période</label><input type="text" disabled value="Année complète" style="background:#f3f4f6;">';
+        }
+        container.innerHTML = html;
     }
-    
-    function exporterPDF() {
-        window.print();
+    function appliquerFiltres() {
+        let e = document.getElementById('exerciceSelect').value;
+        let t = document.getElementById('typePeriodeSelect').value;
+        let u = 'DIMF_2080.php?exercice='+e+'&type_periode='+t;
+        if (t==='mensuel') u += '&mois='+document.getElementById('moisSelect').value;
+        if (t==='trimestre') u += '&trimestre='+document.getElementById('trimestreSelect').value;
+        if (t==='semestre') u += '&semestre='+document.getElementById('semestreSelect').value;
+        window.location.href = u;
+    }
+    document.addEventListener('DOMContentLoaded',function(){ updateDynamicSelect(); document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect); });
+    function exporterExcel() {
+        const wb = XLSX.utils.book_new();
+        const charges = [['DIMF_2080 - CHARGES'],['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],[],['CODE','LIBELLÉ','Montant']];
+        charges.push(['R08','Charges sur opérations avec institutions financières',<?= $R08_total ?>]);
+        charges.push(['R3A','Charges sur opérations avec membres',<?= $R3A_total ?>]);
+        charges.push(['S02','Frais de personnel',<?= $S02_total ?>]);
+        charges.push(['S1A','Impôts et taxes',<?= $S1A_total ?>]);
+        charges.push(['S2A','Autres charges externes',<?= $S2A_total ?>]);
+        charges.push(['T51','Dotations aux amortissements',<?= $T51_total ?>]);
+        charges.push(['T6B','Dotations aux provisions sur créances',<?= $T6B_total ?>]);
+        charges.push(['T80','Charges exceptionnelles',<?= $T80_total ?>]);
+        charges.push(['TOTAL','TOTAL CHARGES',<?= $total_charges ?>]);
+        const wsCharges = XLSX.utils.aoa_to_sheet(charges);
+        XLSX.utils.book_append_sheet(wb, wsCharges, "CHARGES");
+
+        const produits = [['DIMF_2080 - PRODUITS'],[],['CODE','LIBELLÉ','Montant']];
+        produits.push(['V08','Produits sur opérations avec institutions financières',<?= $V08_total ?>]);
+        produits.push(['V3A','Produits sur opérations avec membres',<?= $V3A_total ?>]);
+        produits.push(['W4A','Produits divers d\'exploitation',<?= $W4A_total ?>]);
+        produits.push(['X51','Reprises d\'amortissements et provisions',<?= $X51_total ?>]);
+        produits.push(['X6B','Reprises de provisions sur créances',<?= $X6B_total ?>]);
+        produits.push(['X80','Produits exceptionnels',<?= $X80_total ?>]);
+        produits.push(['TOTAL','TOTAL PRODUITS',<?= $total_produits ?>]);
+        const wsProduits = XLSX.utils.aoa_to_sheet(produits);
+        XLSX.utils.book_append_sheet(wb, wsProduits, "PRODUITS");
+
+        const resultat = [['RÉSULTAT'],['Total Produits',<?= $total_produits ?>],['Total Charges',<?= $total_charges ?>],['Résultat Net',<?= $resultat_net ?>],['Nature','<?= $resultat_type ?>']];
+        const wsResultat = XLSX.utils.aoa_to_sheet(resultat);
+        XLSX.utils.book_append_sheet(wb, wsResultat, "RESULTAT");
+        XLSX.writeFile(wb, 'DIMF_2080_<?= $exercice ?>_<?= $type_periode ?>.xlsx');
     }
 </script>
 </body>

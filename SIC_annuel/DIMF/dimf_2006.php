@@ -1,138 +1,321 @@
 <?php
-// DIMF_2006.php - État des biens donnés en crédit-bail et opérations assimilées
-// Déclaration SICS-BCEAO
+// DIMF_2006.php - État des biens donnés en crédit-bail (avec FPDF intégré)
+// Design et structure identiques à DIMF_2000.php
 
 session_start();
 
-// Configuration BDD
-$host = 'localhost';
-$dbname = 'mandigo';
-$username = 'root';
-$password = '';
+// ============================================================
+// CLASSE FPDF INTÉGRÉE (identique à celle du DIMF_2000)
+// ============================================================
+require_once '../../fpdf/fpdf.php';
 
+class PDF_DIMF extends FPDF {
+    public $codeDimf  = 'DIMF';
+    public $titreDimf = 'Etat financier';
+    public $nomSfd    = 'SFD';
+    public $periode   = '';
+    public $exercice  = '';
+
+    static function u($str) {
+        return iconv('UTF-8', 'ISO-8859-1//TRANSLIT', $str);
+    }
+
+    function Header() {
+        $this->SetFillColor(156, 163, 175);
+        $this->Rect(0, 0, $this->GetPageWidth(), 28, 'F');
+        $this->SetFont('Arial', '', 7);
+        $this->SetTextColor(255, 255, 255);
+        $this->SetXY(8, 3);
+        $this->Cell(0, 4, self::u('Republique de Cote d\'Ivoire  •  Ministere de l\'Economie et des Finances  -  DGTCP / DSFD'), 0, 1, 'L');
+        $this->SetFont('Arial', 'B', 13);
+        $this->SetTextColor(255, 255, 255);
+        $this->SetX(8);
+        $this->Cell(0, 7, self::u($this->codeDimf . '  -  ' . $this->titreDimf), 0, 1, 'L');
+        $this->SetFont('Arial', '', 8);
+        $this->SetTextColor(255, 255, 255);
+        $this->SetX(8);
+        $this->Cell(0, 5, self::u(
+            'SFD : ' . $this->nomSfd .
+            '   |   Periode : ' . $this->periode .
+            '   |   Exercice : ' . $this->exercice .
+            '   |   Arrete au : ' . date('d/m/Y')),
+            0, 1, 'L');
+        $this->SetTextColor(0, 0, 0);
+        $this->Ln(4);
+    }
+
+    function Footer() {
+        $this->SetY(-12);
+        $this->SetFont('Arial', 'I', 7);
+        $this->SetTextColor(100, 116, 139);
+        $this->Cell(0, 4, self::u(
+            'SICS-BCEAO  •  Genere le ' . date('d/m/Y a H:i:s') .
+            '  •  Page ' . $this->PageNo() . '/{nb}'),
+            0, 0, 'C');
+    }
+
+    function SectionTitle($label) {
+        $this->SetFont('Arial', 'B', 9);
+        $this->SetFillColor(0, 0, 0);
+        $this->SetTextColor(255, 255, 255);
+        $this->Cell(0, 7, self::u('  ' . strtoupper($label)), 0, 1, 'L', true);
+        $this->SetTextColor(0, 0, 0);
+        $this->Ln(1);
+    }
+
+    function TableHeader($cols) {
+        $this->SetFont('Arial', 'B', 8);
+        $this->SetFillColor(248, 250, 252);
+        $this->SetTextColor(30, 41, 59);
+        $this->SetDrawColor(226, 232, 240);
+        $this->SetLineWidth(0.2);
+        foreach ($cols as $col) {
+            $align = isset($col['align']) ? $col['align'] : 'L';
+            $this->Cell($col['w'], 6, self::u($col['label']), 1, 0, $align, true);
+        }
+        $this->Ln();
+    }
+
+    function TableRow($cols, $data, $style = '') {
+        switch ($style) {
+            case 'subtotal':
+                $this->SetFillColor(248, 250, 252);
+                $this->SetFont('Arial', 'B', 8);
+                $fill = true; break;
+            case 'total':
+                $this->SetFillColor(240, 253, 244);
+                $this->SetFont('Arial', 'B', 8.5);
+                $fill = true; break;
+            default:
+                $this->SetFillColor(255, 255, 255);
+                $this->SetFont('Arial', '', 7.5);
+                $fill = false; break;
+        }
+        $this->SetTextColor(15, 23, 42);
+        $this->SetDrawColor(226, 232, 240);
+        $this->SetLineWidth(0.1);
+        foreach ($cols as $i => $col) {
+            $val   = isset($data[$i]) ? $data[$i] : '';
+            $align = isset($col['align']) ? $col['align'] : 'L';
+            $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
+        }
+        $this->Ln();
+    }
+
+    static function montant($val) {
+        return number_format((float)$val, 0, ',', ' ') . ' F';
+    }
+}
+
+// ============================================================
+// CONFIGURATION BDD
+// ============================================================
+$host = 'localhost'; $dbname = 'microfinances_dg'; $username = 'root'; $password = '';
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    die("Erreur de connexion : " . $e->getMessage());
+} catch (PDOException $e) { die("Erreur de connexion : " . $e->getMessage()); }
+
+// ============================================================
+// PARAMÈTRES
+// ============================================================
+$exercice     = isset($_GET['exercice'])     ? (int)$_GET['exercice']     : date('Y');
+$type_periode = isset($_GET['type_periode']) ? $_GET['type_periode']      : 'mensuel';
+$mois         = isset($_GET['mois'])         ? (int)$_GET['mois']         : 12;
+$trimestre    = isset($_GET['trimestre'])    ? (int)$_GET['trimestre']    : 4;
+$semestre     = isset($_GET['semestre'])     ? (int)$_GET['semestre']     : null;
+
+switch ($type_periode) {
+    case 'trimestre': $mois = $trimestre * 3; break;
+    case 'semestre':  $mois = ($semestre == 1) ? 6 : 12; break;
+    case 'annuel':    $mois = 12; break;
+}
+$date_fin_periode = date('Y-m-t', strtotime($exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01'));
+
+// ============================================================
+// TRAITEMENT DU FORMULAIRE D'AJOUT (POST) - inchangé
+// ============================================================
+$message_ajout = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['type_contrat'])) {
+    $type_contrat = trim($_POST['type_contrat'] ?? '');
+    $duree        = (int)($_POST['duree'] ?? 0);
+    $montant_brut = (float)($_POST['montant_brut'] ?? 0);
+    $date_debut   = $_POST['date_debut'] ?? '';
+    $date_fin     = $_POST['date_fin'] ?? '';
+    $exo_post     = (int)($_POST['exercice_form'] ?? date('Y'));
+
+    if ($type_contrat && $montant_brut > 0 && $date_debut) {
+        try {
+            $pdo->exec("CREATE TABLE IF NOT EXISTS credit_bail_contrats (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                numero_contrat VARCHAR(50),
+                type VARCHAR(50),
+                duree INT,
+                date_debut DATE,
+                date_fin DATE,
+                montant_brut DECIMAL(15,2) DEFAULT 0,
+                valeur_nette DECIMAL(15,2) DEFAULT 0,
+                statut VARCHAR(30) DEFAULT 'actif',
+                exercice INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )");
+            $stmt_num = $pdo->query("SELECT COUNT(*) as n FROM credit_bail_contrats");
+            $num = ($stmt_num->fetch()['n'] ?? 0) + 1;
+            $numero = 'CB-' . date('Y') . '-' . str_pad($num, 4, '0', STR_PAD_LEFT);
+            $stmt_ins = $pdo->prepare("INSERT INTO credit_bail_contrats (numero_contrat, type, duree, date_debut, date_fin, montant_brut, valeur_nette, statut, exercice) VALUES (:num, :type, :duree, :dd, :df, :mb, :mb, 'actif', :exo)");
+            $stmt_ins->execute([':num' => $numero, ':type' => $type_contrat, ':duree' => $duree, ':dd' => $date_debut, ':df' => $date_fin ?: null, ':mb' => $montant_brut, ':exo' => $exo_post]);
+            $message_ajout = "<div class='alert-success'><i class='fas fa-check-circle'></i> Contrat $numero enregistré.</div>";
+        } catch (PDOException $e) {
+            $message_ajout = "<div class='alert-error'><i class='fas fa-exclamation-triangle'></i> Erreur : " . htmlspecialchars($e->getMessage()) . "</div>";
+        }
+    } else {
+        $message_ajout = "<div class='alert-error'><i class='fas fa-exclamation-triangle'></i> Champs obligatoires manquants.</div>";
+    }
 }
 
-// Récupération des paramètres
-$exercice = isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y');
-$trimestre = isset($_GET['trimestre']) ? (int)$_GET['trimestre'] : 4;
-$mois = isset($_GET['mois']) ? (int)$_GET['mois'] : 12;
-$date_fin_periode = $exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01';
-$date_fin_periode = date('Y-m-t', strtotime($date_fin_periode));
-
 // ============================================================
-// RÉCUPÉRATION DES DONNÉES DE CRÉDIT-BAIL
+// STRUCTURE DES CATÉGORIES (inchangée)
 // ============================================================
-
-// Structure des catégories de crédit-bail
 $categories = [
     'ZA1' => ['code' => 'ZA1', 'libelle' => 'CRÉDIT-BAIL', 'is_parent' => true],
     'ZA2' => ['code' => 'ZA2', 'libelle' => 'Crédit-bail Mobilier', 'parent' => 'ZA1'],
     'ZA3' => ['code' => 'ZA3', 'libelle' => 'Crédit-bail Immobilier', 'parent' => 'ZA1'],
     'ZA4' => ['code' => 'ZA4', 'libelle' => 'Crédit-bail sur actifs incorporels', 'parent' => 'ZA1'],
-    'ZA5' => ['code' => 'ZA5', 'libelle' => 'Location avec option d\'achat', 'parent' => 'ZA1'],
+    'ZA5' => ['code' => 'ZA5', 'libelle' => "Location avec option d'achat", 'parent' => 'ZA1'],
     'ZA6' => ['code' => 'ZA6', 'libelle' => 'LOCATION-VENTE', 'is_parent' => true],
-    'ZA7' => ['code' => 'ZA7', 'libelle' => 'CRÉANCES EN SOUFFRANCE SUR OPÉRATIONS DE CRÉDIT-BAIL ET ASSIMILÉES', 'is_parent' => true]
+    'ZA7' => ['code' => 'ZA7', 'libelle' => 'CRÉANCES EN SOUFFRANCE SUR OPÉRATIONS DE CRÉDIT-BAIL', 'is_parent' => true]
 ];
 
-// Initialisation des données
 $data = [];
 foreach ($categories as $key => $cat) {
     $data[$key] = [
-        'code' => $cat['code'],
-        'libelle' => $cat['libelle'],
-        'duree' => '',
-        'montant_brut' => 0,
-        'amortissements' => 0,
-        'montant_net' => 0,
-        'is_parent' => isset($cat['is_parent']) ? $cat['is_parent'] : false,
-        'parent' => isset($cat['parent']) ? $cat['parent'] : null
+        'code'          => $cat['code'],
+        'libelle'       => $cat['libelle'],
+        'duree'         => '',
+        'montant_brut'  => 0.0,
+        'amortissements'=> 0.0,
+        'montant_net'   => 0.0,
+        'is_parent'     => !empty($cat['is_parent']),
+        'parent'        => $cat['parent'] ?? null
     ];
 }
 
-// Récupération des données depuis la table des immobilisations (si existante)
-// Les crédit-bail sont généralement des immobilisations avec un type spécifique
+// Récupération depuis immobilisations
+$map_types = ['ZA2' => 'MOBILIER', 'ZA3' => 'IMMOBILIER', 'ZA4' => 'INCORPOREL', 'ZA5' => 'LOA'];
 try {
-    // Vérifier si la table immobilisations a une colonne type_credit_bail
-    $stmt = $pdo->query("SHOW COLUMNS FROM immobilisations LIKE 'type_credit_bail'");
-    $has_column = $stmt->rowCount() > 0;
-    
-    if ($has_column) {
-        // Crédit-bail mobilier
-        $stmt = $pdo->prepare("
-            SELECT 
-                COALESCE(SUM(montant_achat), 0) as montant_brut,
-                COALESCE(SUM(amortissement_total), 0) as amortissements
-            FROM immobilisations
-            WHERE type_credit_bail = 'MOBILIER' AND statut = 'actif' AND date_achat <= :date_fin
-        ");
-        $stmt->execute([':date_fin' => $date_fin_periode]);
-        $result = $stmt->fetch();
-        $data['ZA2']['montant_brut'] = $result['montant_brut'];
-        $data['ZA2']['amortissements'] = $result['amortissements'];
-        $data['ZA2']['montant_net'] = $result['montant_brut'] - $result['amortissements'];
-        
-        // Crédit-bail immobilier
-        $stmt = $pdo->prepare("
-            SELECT 
-                COALESCE(SUM(montant_achat), 0) as montant_brut,
-                COALESCE(SUM(amortissement_total), 0) as amortissements
-            FROM immobilisations
-            WHERE type_credit_bail = 'IMMOBILIER' AND statut = 'actif' AND date_achat <= :date_fin
-        ");
-        $stmt->execute([':date_fin' => $date_fin_periode]);
-        $result = $stmt->fetch();
-        $data['ZA3']['montant_brut'] = $result['montant_brut'];
-        $data['ZA3']['amortissements'] = $result['amortissements'];
-        $data['ZA3']['montant_net'] = $result['montant_brut'] - $result['amortissements'];
-        
-        // Location avec option d'achat
-        $stmt = $pdo->prepare("
-            SELECT 
-                COALESCE(SUM(montant_achat), 0) as montant_brut,
-                COALESCE(SUM(amortissement_total), 0) as amortissements
-            FROM immobilisations
-            WHERE type_credit_bail = 'LOA' AND statut = 'actif' AND date_achat <= :date_fin
-        ");
-        $stmt->execute([':date_fin' => $date_fin_periode]);
-        $result = $stmt->fetch();
-        $data['ZA5']['montant_brut'] = $result['montant_brut'];
-        $data['ZA5']['amortissements'] = $result['amortissements'];
-        $data['ZA5']['montant_net'] = $result['montant_brut'] - $result['amortissements'];
+    $tbl_check = $pdo->query("SHOW TABLES LIKE 'immobilisations'");
+    if ($tbl_check->rowCount() > 0 && $pdo->query("SHOW COLUMNS FROM immobilisations LIKE 'type_credit_bail'")->rowCount() > 0) {
+        foreach ($map_types as $code => $type_val) {
+            $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_achat),0) as brut, COALESCE(SUM(amortissement_total),0) as amort FROM immobilisations WHERE type_credit_bail = :type AND statut = 'actif' AND date_achat <= :date_fin");
+            $stmt->execute([':type' => $type_val, ':date_fin' => $date_fin_periode]);
+            $row = $stmt->fetch();
+            $data[$code]['montant_brut'] = (float)$row['brut'];
+            $data[$code]['amortissements'] = (float)$row['amort'];
+            $data[$code]['montant_net'] = $data[$code]['montant_brut'] - $data[$code]['amortissements'];
+        }
     }
-} catch (PDOException $e) {
-    // Table ou colonne n'existe pas
-}
+} catch (PDOException $e) {}
 
-// Calcul des totaux par catégorie parente
-$total_credit_bail = $data['ZA2']['montant_net'] + $data['ZA3']['montant_net'] + $data['ZA4']['montant_net'] + $data['ZA5']['montant_net'];
-$data['ZA1']['montant_net'] = $total_credit_bail;
+// Récupération depuis credit_bail_contrats (ZA6)
+try {
+    $tbl_cb = $pdo->query("SHOW TABLES LIKE 'credit_bail_contrats'");
+    if ($tbl_cb->rowCount() > 0) {
+        $stmt_lv = $pdo->prepare("SELECT COALESCE(SUM(montant_brut),0) as brut, COALESCE(SUM(valeur_nette),0) as net FROM credit_bail_contrats WHERE type = 'VENTE' AND statut = 'actif' AND exercice = :exo");
+        $stmt_lv->execute([':exo' => $exercice]);
+        $row_lv = $stmt_lv->fetch();
+        $data['ZA6']['montant_brut'] = (float)$row_lv['brut'];
+        $data['ZA6']['montant_net'] = (float)$row_lv['net'];
+    }
+} catch (PDOException $e) {}
+
+// Calcul des totaux
 $data['ZA1']['montant_brut'] = $data['ZA2']['montant_brut'] + $data['ZA3']['montant_brut'] + $data['ZA4']['montant_brut'] + $data['ZA5']['montant_brut'];
 $data['ZA1']['amortissements'] = $data['ZA2']['amortissements'] + $data['ZA3']['amortissements'] + $data['ZA4']['amortissements'] + $data['ZA5']['amortissements'];
+$data['ZA1']['montant_net'] = $data['ZA2']['montant_net'] + $data['ZA3']['montant_net'] + $data['ZA4']['montant_net'] + $data['ZA5']['montant_net'];
+$total_general_brut = $data['ZA1']['montant_brut'] + $data['ZA6']['montant_brut'] + $data['ZA7']['montant_brut'];
+$total_general_amor = $data['ZA1']['amortissements'] + $data['ZA6']['amortissements'] + $data['ZA7']['amortissements'];
+$total_general_net = $data['ZA1']['montant_net'] + $data['ZA6']['montant_net'] + $data['ZA7']['montant_net'];
 
-$total_general = $total_credit_bail + $data['ZA6']['montant_net'] + $data['ZA7']['montant_net'];
-
-// Récupération des détails des contrats de crédit-bail
+// Détail des contrats
 $details_contrats = [];
 try {
-    // Vérifier si une table des contrats de crédit-bail existe
-    $stmt = $pdo->query("SHOW TABLES LIKE 'credit_bail_contrats'");
-    if ($stmt->rowCount() > 0) {
-        $stmtDetails = $pdo->prepare("
-            SELECT * FROM credit_bail_contrats 
-            WHERE exercice = :exercice 
-            ORDER BY date_debut DESC
-        ");
-        $stmtDetails->execute([':exercice' => $exercice]);
-        $details_contrats = $stmtDetails->fetchAll();
+    if ($pdo->query("SHOW TABLES LIKE 'credit_bail_contrats'")->rowCount() > 0) {
+        $stmt_d = $pdo->prepare("SELECT * FROM credit_bail_contrats WHERE exercice = :exo ORDER BY date_debut DESC");
+        $stmt_d->execute([':exo' => $exercice]);
+        $details_contrats = $stmt_d->fetchAll();
     }
-} catch (PDOException $e) {
-    $details_contrats = [];
+} catch (PDOException $e) {}
+
+// ============================================================
+// GÉNÉRATION PDF (si format=pdf)
+// ============================================================
+$format = isset($_GET['format']) ? $_GET['format'] : 'html';
+
+if ($format === 'pdf') {
+    switch ($type_periode) {
+        case 'mensuel':   $lib_periode = 'Mois ' . str_pad($mois,2,'0',STR_PAD_LEFT) . '/' . $exercice; break;
+        case 'trimestre': $lib_periode = $trimestre . 'e Trim. ' . $exercice; break;
+        case 'semestre':  $lib_periode = $semestre . 'er Sem. ' . $exercice; break;
+        default:          $lib_periode = 'Annee ' . $exercice;
+    }
+
+    $pdf = new PDF_DIMF('L', 'mm', 'A4');
+    $pdf->AliasNbPages();
+    $pdf->codeDimf  = 'DIMF_2006';
+    $pdf->titreDimf = 'Biens donnés en crédit-bail';
+    $pdf->nomSfd    = isset($_SESSION['nom_sfd']) ? $_SESSION['nom_sfd'] : 'SFD';
+    $pdf->periode   = $lib_periode;
+    $pdf->exercice  = $exercice;
+    $pdf->SetMargins(8, 35, 8);
+    $pdf->SetAutoPageBreak(true, 14);
+    $pdf->AddPage();
+
+    // Colonnes pour le tableau crédit-bail
+    $cols = [
+        ['label' => 'CODE',           'w' => 20],
+        ['label' => 'LIBELLÉS',       'w' => 110],
+        ['label' => 'Durée (mois)',   'w' => 25, 'align' => 'R'],
+        ['label' => 'Brut (FCFA)',    'w' => 45, 'align' => 'R'],
+        ['label' => 'Amort. (FCFA)',  'w' => 45, 'align' => 'R'],
+        ['label' => 'Net (FCFA)',     'w' => 45, 'align' => 'R'],
+    ];
+
+    $pdf->SectionTitle('Crédit-bail et opérations assimilées');
+    $pdf->TableHeader($cols);
+
+    foreach ($data as $item) {
+        if ($item['is_parent']) {
+            $pdf->TableRow($cols, [
+                $item['code'],
+                $item['libelle'],
+                '-',
+                $item['montant_brut'] > 0 ? PDF_DIMF::montant($item['montant_brut']) : '-',
+                $item['amortissements'] > 0 ? PDF_DIMF::montant($item['amortissements']) : '-',
+                $item['montant_net'] > 0 ? PDF_DIMF::montant($item['montant_net']) : '-'
+            ], 'subtotal');
+        } else {
+            $pdf->TableRow($cols, [
+                $item['code'],
+                $item['libelle'],
+                $item['duree'] ?: '-',
+                PDF_DIMF::montant($item['montant_brut']),
+                PDF_DIMF::montant($item['amortissements']),
+                PDF_DIMF::montant($item['montant_net'])
+            ]);
+        }
+    }
+    $pdf->TableRow($cols, [
+        'TOTAL',
+        'TOTAL GÉNÉRAL',
+        '',
+        PDF_DIMF::montant($total_general_brut),
+        PDF_DIMF::montant($total_general_amor),
+        PDF_DIMF::montant($total_general_net)
+    ], 'total');
+
+    $pdf->Output('I', 'DIMF_2006_CreditBail_' . $exercice . '_' . $type_periode . '.pdf');
+    exit;
 }
 ?>
 <!DOCTYPE html>
@@ -140,393 +323,197 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DIMF_2006 - État des biens donnés en crédit-bail</title>
+    <title>DIMF_2006 - Crédit-bail</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f0f2f5;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #1a3a5c, #0d2137);
-            color: white;
-            padding: 25px 30px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        
-        .header h1 {
-            font-size: 1.8rem;
-            margin-bottom: 8px;
-        }
-        
-        .header .subtitle {
-            opacity: 0.9;
-            font-size: 0.95rem;
-        }
-        
-        .badge {
-            display: inline-block;
-            background: #ffc107;
-            color: #1a3a5c;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: bold;
-            margin-top: 10px;
-        }
-        
-        .filters {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            display: flex;
-            gap: 15px;
-            align-items: flex-end;
-            flex-wrap: wrap;
-        }
-        
-        .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .filter-group label {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: #555;
-        }
-        
-        .filter-group select, .filter-group input {
-            padding: 8px 15px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 0.9rem;
-        }
-        
-        .btn {
-            padding: 8px 20px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s;
-        }
-        
-        .btn-primary {
-            background: #1a3a5c;
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background: #0d2137;
-        }
-        
-        .section-card {
-            background: white;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
-        
-        .section-title {
-            padding: 15px 20px;
-            background: #f8f9fa;
-            border-bottom: 2px solid #1a3a5c;
-            font-size: 1.1rem;
-            font-weight: bold;
-            color: #1a3a5c;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        
-        th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
-            font-size: 0.85rem;
-        }
-        
-        tr:hover {
-            background: #f8f9fa;
-        }
-        
-        .text-right {
-            text-align: right;
-        }
-        
-        .total-row {
-            background: #e8f5e9;
-            font-weight: bold;
-        }
-        
-        .parent-row {
-            background: #f0f7ff;
-            font-weight: bold;
-        }
-        
-        .child-row {
-            padding-left: 30px;
-        }
-        
-        .footer {
-            text-align: center;
-            padding: 20px;
-            color: #777;
-            font-size: 0.8rem;
-        }
-        
-        .info-box {
-            background: #e3f2fd;
-            border-left: 4px solid #2196f3;
-            padding: 15px;
-            margin: 15px;
-            border-radius: 8px;
-            font-size: 0.9rem;
-        }
-        
-        .child-indent {
-            padding-left: 30px;
-        }
-        
-        @media (max-width: 768px) {
-            .filters {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            table {
-                font-size: 0.75rem;
-            }
-            
-            th, td {
-                padding: 8px 10px;
-            }
-        }
+        * { margin:0; padding:0; box-sizing: border-box; }
+        body { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background: #f1f5f9; padding: 24px; }
+        .dashboard { max-width: 1400px; margin: 0 auto; }
+        .page-header { background: linear-gradient(135deg, #3b82f6, #60a5fa); border-radius: 24px; padding: 20px 28px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; box-shadow: 0 4px 6px -2px rgba(0,0,0,0.05); }
+        .header-left h1 { font-size: 1.6rem; font-weight: 600; color: white; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; }
+        .subtitle { font-size: 0.8rem; color: #e0f2fe; line-height: 1.4; }
+        .badge { display: inline-block; background: #2563eb; color: white; padding: 4px 12px; border-radius: 30px; font-size: 0.7rem; font-weight: 500; margin-top: 8px; }
+        .btn-group { display: flex; gap: 12px; }
+        .btn-excel, .btn-pdf { display: inline-flex; align-items: center; gap: 8px; padding: 8px 20px; border-radius: 40px; font-weight: 500; font-size: 0.85rem; border: none; cursor: pointer; transition: 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.05); text-decoration: none; }
+        .btn-excel { background: #10b981; color: white; }
+        .btn-excel:hover { background: #059669; transform: translateY(-1px); }
+        .btn-pdf { background: #ef4444; color: white; }
+        .btn-pdf:hover { background: #dc2626; transform: translateY(-1px); }
+        .card { background: white; border-radius: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 8px 16px -4px rgba(0,0,0,0.05); padding: 20px 24px; margin-bottom: 24px; }
+        .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #eef2f6; font-weight: 600; font-size: 1rem; color: #1e40af; }
+        .card-header i { color: #3b82f6; }
+        .filters-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 20px; }
+        .filter-item { display: flex; flex-direction: column; gap: 6px; }
+        .filter-item label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #4b5563; }
+        .filter-item select, .filter-item input { background: white; border: 1px solid #d1d5db; border-radius: 12px; padding: 8px 14px; font-size: 0.85rem; color: #111827; cursor: pointer; }
+        .filter-item select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.2); }
+        .btn-apply { background: #3b82f6; color: white; border: none; border-radius: 40px; padding: 8px 24px; font-weight: 500; font-size: 0.85rem; cursor: pointer; transition: 0.2s; }
+        .btn-apply:hover { background: #2563eb; transform: translateY(-1px); }
+        .table-wrapper { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th { text-align: left; padding: 12px 16px; background: #f8fafc; font-weight: 600; color: #1e293b; border-bottom: 1px solid #e2e8f0; }
+        td { padding: 10px 16px; border-bottom: 1px solid #f1f5f9; color: #0f172a; }
+        .text-right { text-align: right; font-family: 'Courier New', monospace; font-weight: 500; }
+        .subtotal-row { background: #f8fafc; font-weight: 600; }
+        .total-row { background: #f0fdf4; font-weight: 700; border-top: 2px solid #bbf7d0; }
+        .parent-row { background: #f8fafc; font-weight: 600; }
+        .child-indent { padding-left: 30px; }
+        .alert-success, .alert-error { padding: 12px 16px; border-radius: 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+        .alert-success { background: #d1fae5; color: #065f46; }
+        .alert-error { background: #fee2e2; color: #991b1b; }
+        .info-box { background: #eef2ff; border-left: 4px solid #3b82f6; padding: 16px 20px; border-radius: 16px; display: flex; align-items: center; gap: 14px; }
+        .page-footer { text-align: center; font-size: 0.75rem; color: #6b7280; margin-top: 16px; }
+        @media print { .btn-group, .page-footer, #filtersCard { display: none !important; } .card { box-shadow: none; } }
+        @media (max-width: 780px) { body { padding: 12px; } .filters-row { flex-direction: column; } th, td { padding: 8px 12px; font-size: 0.75rem; } }
     </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1>DIMF_2006 - ÉTAT DES BIENS DONNÉS EN CRÉDIT-BAIL</h1>
-        <div class="subtitle">
-            République de Côte d'Ivoire / Ministère de l'Economie et des Finances<br>
-            Direction Générale du Trésor et de la Comptabilité Publique (DGTCP)<br>
-            Direction des Systèmes Financiers Décentralisés (DSFD)
+<div class="dashboard">
+    <div class="page-header">
+        <div class="header-left">
+            <h1><i class="fas fa-handshake"></i> DIMF_2006 - CRÉDIT-BAIL</h1>
+            <div class="subtitle">République de Côte d'Ivoire / Ministère de l'Economie et des Finances – DGTCP / DSFD</div>
+            <div class="badge">SICS-BCEAO</div>
         </div>
-        <div class="badge">SICS-BCEAO - Crédit-bail et opérations assimilées</div>
-    </div>
-    
-    <div class="filters">
-        <div class="filter-group">
-            <label>Exercice</label>
-            <select name="exercice" id="exercice">
-                <?php for($y = 2020; $y <= date('Y')+1; $y++): ?>
-                    <option value="<?= $y ?>" <?= $y == $exercice ? 'selected' : '' ?>><?= $y ?></option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Trimestre</label>
-            <select name="trimestre" id="trimestre">
-                <option value="1" <?= $trimestre == 1 ? 'selected' : '' ?>>1er Trimestre</option>
-                <option value="2" <?= $trimestre == 2 ? 'selected' : '' ?>>2ème Trimestre</option>
-                <option value="3" <?= $trimestre == 3 ? 'selected' : '' ?>>3ème Trimestre</option>
-                <option value="4" <?= $trimestre == 4 ? 'selected' : '' ?>>4ème Trimestre</option>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Mois</label>
-            <select name="mois" id="mois">
-                <?php for($m = 1; $m <= 12; $m++): ?>
-                    <option value="<?= $m ?>" <?= $m == $mois ? 'selected' : '' ?>>
-                        <?= str_pad($m, 2, '0', STR_PAD_LEFT) ?> - <?= date('F', mktime(0,0,0,$m,1)) ?>
-                    </option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <button class="btn btn-primary" onclick="appliquerFiltres()">Appliquer</button>
-        </div>
-        <div class="filter-group">
-            <button class="btn" onclick="exporterPDF()" style="background:#f5f5f5;">📄 Exporter PDF</button>
+        <div class="btn-group">
+            <button class="btn-excel" onclick="exporterExcel()"><i class="fas fa-file-excel"></i> Excel</button>
+            <?php
+            $pdf_params = http_build_query(['exercice'=>$exercice,'type_periode'=>$type_periode,'mois'=>$mois,'trimestre'=>$trimestre,'semestre'=>$semestre,'format'=>'pdf']);
+            ?>
+            <a class="btn-pdf" href="?<?= $pdf_params ?>" target="_blank"><i class="fas fa-file-pdf"></i> PDF</a>
         </div>
     </div>
-    
-    <div class="info-box">
-        <strong>ⓘ Note :</strong> Cet état présente les biens donnés en crédit-bail et opérations assimilées (location avec option d'achat, location-vente).
-        Les montants sont présentés en valeur brute, amortissements/provisions et valeur nette.
+
+    <div class="card" id="filtersCard">
+        <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres</div>
+        <div class="filters-row">
+            <div class="filter-item"><label>Année</label><select id="exerciceSelect"><?php for($y=2020;$y<=date('Y')+1;$y++) echo "<option value='$y' ".($y==$exercice?'selected':'').">$y</option>"; ?></select></div>
+            <div class="filter-item"><label>Type période</label><select id="typePeriodeSelect"><option value="mensuel" <?= $type_periode=='mensuel'?'selected':'' ?>>Mensuel</option><option value="trimestre" <?= $type_periode=='trimestre'?'selected':'' ?>>Trimestre</option><option value="semestre" <?= $type_periode=='semestre'?'selected':'' ?>>Semestre</option><option value="annuel" <?= $type_periode=='annuel'?'selected':'' ?>>Annuel</option></select></div>
+            <div class="filter-item" id="dynamicSelectContainer">
+                <?php
+                if ($type_periode == 'mensuel') {
+                    echo '<label>Mois</label><select id="moisSelect">';
+                    for ($m=1;$m<=12;$m++) { $s=($m==$mois)?'selected':''; echo "<option value='$m' $s>".str_pad($m,2,'0',STR_PAD_LEFT)." - ".date('F',mktime(0,0,0,$m,1))."</option>"; }
+                    echo '</select>';
+                } elseif ($type_periode == 'trimestre') {
+                    echo '<label>Trimestre</label><select id="trimestreSelect">';
+                    for ($t=1;$t<=4;$t++) { $s=($t==$trimestre)?'selected':''; echo "<option value='$t' $s>$t".($t==1?'er':'ème')." Trimestre</option>"; }
+                    echo '</select>';
+                } elseif ($type_periode == 'semestre') {
+                    echo '<label>Semestre</label><select id="semestreSelect">';
+                    for ($s=1;$s<=2;$s++) { $sel=($s==$semestre)?'selected':''; echo "<option value='$s' $sel>$s".($s==1?'er':'e')." semestre</option>"; }
+                    echo '</select>';
+                } else {
+                    echo '<label>Période</label><input type="text" disabled value="Année complète" style="background:#f3f4f6;cursor:default;">';
+                }
+                ?>
+            </div>
+            <button class="btn-apply" onclick="appliquerFiltres()"><i class="fas fa-filter"></i> Appliquer</button>
+        </div>
+        <div style="font-size:0.7rem;color:#6b7280;margin-top:12px;"><i class="fas fa-info-circle"></i> Choisissez le type de période pour affiner la date d'arrêté.</div>
     </div>
-    
-    <!-- Tableau principal -->
-    <div class="section-card">
-        <div class="section-title">🏗️ CRÉDIT-BAIL ET OPÉRATIONS ASSIMILÉES</div>
-        <div style="overflow-x: auto;">
+
+    <?= $message_ajout ?>
+
+    <div class="card">
+        <div class="card-header"><i class="fas fa-building"></i> CRÉDIT-BAIL ET OPÉRATIONS ASSIMILÉES</div>
+        <div class="table-wrapper">
             <table>
-                <thead>
-                    <tr>
-                        <th>CODE</th>
-                        <th>LIBELLÉS</th>
-                        <th class="text-right">Durée (mois)</th>
-                        <th class="text-right">Montants Bruts (FCFA)</th>
-                        <th class="text-right">Amortissements/Provisions (FCFA)</th>
-                        <th class="text-right">Montants nets (FCFA)</th>
-                    </tr>
-                </thead>
+                <thead><th>CODE</th><th>LIBELLÉS</th><th class="text-right">Durée (mois)</th><th class="text-right">Montants Bruts (FCFA)</th><th class="text-right">Amortissements/Provisions (FCFA)</th><th class="text-right">Montants nets (FCFA)</th></thead>
                 <tbody>
-                    <?php foreach ($data as $key => $item): ?>
+                    <?php foreach ($data as $item): ?>
                         <?php if ($item['is_parent']): ?>
-                            <tr class="parent-row">
-                                <td><strong><?= $item['code'] ?></strong></td>
-                                <td colspan="5"><strong><?= htmlspecialchars($item['libelle']) ?></strong></td>
-                            </tr>
+                            <tr class="parent-row"><td><strong><?= htmlspecialchars($item['code']) ?></strong></td><td><strong><?= htmlspecialchars($item['libelle']) ?></strong></td><td class="text-right">-</td><td class="text-right"><?= $item['montant_brut']>0?number_format($item['montant_brut'],0,',',' '):'-' ?></td><td class="text-right"><?= $item['amortissements']>0?number_format($item['amortissements'],0,',',' '):'-' ?></td><td class="text-right"><?= $item['montant_net']>0?number_format($item['montant_net'],0,',',' '):'-' ?></td></tr>
                         <?php else: ?>
-                            <tr>
-                                <td><?= $item['code'] ?></td>
-                                <td class="child-indent"><?= htmlspecialchars($item['libelle']) ?></td>
-                                <td class="text-right"><?= htmlspecialchars($item['duree']) ?></td>
-                                <td class="text-right"><?= number_format($item['montant_brut'], 0, ',', ' ') ?></td>
-                                <td class="text-right"><?= number_format($item['amortissements'], 0, ',', ' ') ?></td>
-                                <td class="text-right"><?= number_format($item['montant_net'], 0, ',', ' ') ?></td>
-                            </tr>
+                            <tr><td><?= htmlspecialchars($item['code']) ?></td><td class="child-indent"><?= htmlspecialchars($item['libelle']) ?></td><td class="text-right"><?= $item['duree']?:'-' ?></td><td class="text-right"><?= number_format($item['montant_brut'],0,',',' ') ?></td><td class="text-right"><?= number_format($item['amortissements'],0,',',' ') ?></td><td class="text-right"><?= number_format($item['montant_net'],0,',',' ') ?></td></tr>
                         <?php endif; ?>
                     <?php endforeach; ?>
-                    <tr class="total-row">
-                        <td colspan="5"><strong>TOTAL</strong></td>
-                        <td class="text-right"><strong><?= number_format($total_general, 0, ',', ' ') ?></strong></td>
-                    </tr>
+                    <tr class="total-row"><td colspan="3"><strong>TOTAL GÉNÉRAL</strong></td><td class="text-right"><strong><?= number_format($total_general_brut,0,',',' ') ?></strong></td><td class="text-right"><strong><?= number_format($total_general_amor,0,',',' ') ?></strong></td><td class="text-right"><strong><?= number_format($total_general_net,0,',',' ') ?></strong></td></tr>
                 </tbody>
             </table>
         </div>
     </div>
-    
-    <!-- Détail des contrats -->
-    <?php if(!empty($details_contrats)): ?>
-    <div class="section-card">
-        <div class="section-title">📋 DÉTAIL DES CONTRATS DE CRÉDIT-BAIL</div>
-        <div style="overflow-x: auto;">
+
+    <div class="card">
+        <div class="card-header"><i class="fas fa-file-contract"></i> DÉTAIL DES CONTRATS - Exercice <?= $exercice ?></div>
+        <?php if(empty($details_contrats)): ?><div class="info-box">Aucun contrat enregistré.</div><?php else: ?>
+        <div class="table-wrapper">
             <table>
-                <thead>
-                    <tr>
-                        <th>N° Contrat</th>
-                        <th>Type</th>
-                        <th>Durée</th>
-                        <th>Date début</th>
-                        <th>Date fin</th>
-                        <th class="text-right">Montant brut</th>
-                        <th class="text-right">Valeur nette</th>
-                        <th>Statut</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach($details_contrats as $contrat): ?>
-                    <tr>
-                        <td><?= htmlspecialchars($contrat['numero_contrat'] ?? '-') ?></td>
-                        <td><?= htmlspecialchars($contrat['type'] ?? '-') ?></td>
-                        <td class="text-right"><?= htmlspecialchars($contrat['duree'] ?? '-') ?></td>
-                        <td><?= htmlspecialchars($contrat['date_debut'] ?? '-') ?></td>
-                        <td><?= htmlspecialchars($contrat['date_fin'] ?? '-') ?></td>
-                        <td class="text-right"><?= number_format($contrat['montant_brut'] ?? 0, 0, ',', ' ') ?></td>
-                        <td class="text-right"><?= number_format($contrat['valeur_nette'] ?? 0, 0, ',', ' ') ?></td>
-                        <td><?= htmlspecialchars($contrat['statut'] ?? '-') ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
+                <thead><th>N° Contrat</th><th>Type</th><th class="text-right">Durée</th><th>Date début</th><th>Date fin</th><th class="text-right">Montant brut</th><th class="text-right">Valeur nette</th><th>Statut</th></thead>
+                <tbody><?php foreach($details_contrats as $c): ?>
+                <tr><td><?= htmlspecialchars($c['numero_contrat']) ?></td><td><?= htmlspecialchars($c['type']) ?></td><td class="text-right"><?= $c['duree'] ?> mois</td><td><?= date('d/m/Y',strtotime($c['date_debut'])) ?></td><td><?= $c['date_fin']?date('d/m/Y',strtotime($c['date_fin'])):'-' ?></td><td class="text-right"><?= number_format($c['montant_brut'],0,',',' ') ?></td><td class="text-right"><?= number_format($c['valeur_nette'],0,',',' ') ?></td><td><?= $c['statut'] ?></td></tr>
+                <?php endforeach; ?></tbody>
             </table>
-        </div>
+        </div><?php endif; ?>
     </div>
-    <?php else: ?>
-    <div class="section-card">
-        <div class="section-title">📋 DÉTAIL DES CONTRATS DE CRÉDIT-BAIL</div>
-        <div class="info-box">
-            Aucun contrat de crédit-bail enregistré pour l'exercice <?= $exercice ?>.
-        </div>
+
+    <div class="card">
+        <div class="card-header"><i class="fas fa-plus-circle"></i> AJOUTER UN CONTRAT</div>
+        <form method="POST">
+            <input type="hidden" name="exercice_form" value="<?= $exercice ?>">
+            <div class="filters-row" style="margin-bottom:0;">
+                <div class="filter-item"><label>Type *</label><select name="type_contrat" required><option value="">--</option><option value="MOBILIER">Crédit-bail Mobilier</option><option value="IMMOBILIER">Crédit-bail Immobilier</option><option value="INCORPOREL">Crédit-bail sur actifs incorporels</option><option value="LOA">Location avec option d'achat</option><option value="VENTE">Location-vente</option></select></div>
+                <div class="filter-item"><label>Durée (mois)</label><input type="number" name="duree"></div>
+                <div class="filter-item"><label>Montant brut *</label><input type="number" name="montant_brut" required></div>
+                <div class="filter-item"><label>Date début *</label><input type="date" name="date_debut" required></div>
+                <div class="filter-item"><label>Date fin</label><input type="date" name="date_fin"></div>
+                <div class="filter-item"><button type="submit" class="btn-apply">💾 Enregistrer</button></div>
+            </div>
+        </form>
     </div>
-    <?php endif; ?>
-    
-    <!-- Formulaire d'ajout rapide (optionnel) -->
-    <div class="section-card">
-        <div class="section-title">➕ AJOUTER UN CONTRAT DE CRÉDIT-BAIL</div>
-        <div class="info-box">
-            <form method="post" action="">
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                    <div>
-                        <label>Type de contrat</label>
-                        <select name="type_contrat" style="width:100%; padding:8px;">
-                            <option value="">-- Sélectionner --</option>
-                            <option value="MOBILIER">Crédit-bail Mobilier</option>
-                            <option value="IMMOBILIER">Crédit-bail Immobilier</option>
-                            <option value="INCORPOREL">Crédit-bail sur actifs incorporels</option>
-                            <option value="LOA">Location avec option d'achat</option>
-                            <option value="VENTE">Location-vente</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label>Durée (mois)</label>
-                        <input type="number" name="duree" placeholder="Durée en mois">
-                    </div>
-                    <div>
-                        <label>Montant brut (FCFA)</label>
-                        <input type="number" name="montant_brut" placeholder="Montant brut">
-                    </div>
-                    <div>
-                        <label>Date début</label>
-                        <input type="date" name="date_debut">
-                    </div>
-                    <div>
-                        <label>Date fin</label>
-                        <input type="date" name="date_fin">
-                    </div>
-                </div>
-                <div style="margin-top: 15px;">
-                    <button type="submit" class="btn btn-primary">Enregistrer le contrat</button>
-                </div>
-            </form>
-        </div>
-    </div>
-    
-    <div class="footer">
-        Document généré le <?= date('d/m/Y à H:i:s') ?> - Données extraites de la base Mandigo<br>
-        Période : <?= $exercice ?> - <?= $trimestre ?>ème trimestre (arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>)
-    </div>
+
+    <div class="page-footer">Généré le <?= date('d/m/Y à H:i:s') ?> – Période : <?= $exercice ?> (<?= ucfirst($type_periode) ?>) arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?></div>
 </div>
 
 <script>
-    function appliquerFiltres() {
-        let exercice = document.getElementById('exercice').value;
-        let trimestre = document.getElementById('trimestre').value;
-        let mois = document.getElementById('mois').value;
-        window.location.href = 'DIMF_2006.php?exercice=' + exercice + '&trimestre=' + trimestre + '&mois=' + mois;
+    function updateDynamicSelect() {
+        const type = document.getElementById('typePeriodeSelect').value;
+        const container = document.getElementById('dynamicSelectContainer');
+        const currentMois = <?= $mois ?>;
+        const currentTrimestre = <?= $trimestre ?>;
+        const currentSemestre = <?= json_encode($semestre) ?>;
+        let html = '';
+        if (type === 'mensuel') {
+            html = '<label>Mois</label><select id="moisSelect">';
+            for (let m=1;m<=12;m++) { const s=(m===currentMois)?'selected':''; const n=new Date(2000,m-1,1).toLocaleString('fr',{month:'long'}); html+=`<option value="${m}" ${s}>${String(m).padStart(2,'0')} - ${n}</option>`; }
+            html += '</select>';
+        } else if (type === 'trimestre') {
+            html = '<label>Trimestre</label><select id="trimestreSelect">';
+            for (let t=1;t<=4;t++) { const s=(t===currentTrimestre)?'selected':''; html+=`<option value="${t}" ${s}>${t}${t===1?'er':'ème'} Trimestre</option>`; }
+            html += '</select>';
+        } else if (type === 'semestre') {
+            html = '<label>Semestre</label><select id="semestreSelect">';
+            for (let s=1;s<=2;s++) { const sel=(s===currentSemestre)?'selected':''; html+=`<option value="${s}" ${sel}>${s}${s===1?'er':'e'} semestre</option>`; }
+            html += '</select>';
+        } else {
+            html = '<label>Période</label><input type="text" disabled value="Année complète" style="background:#f3f4f6;cursor:default;">';
+        }
+        container.innerHTML = html;
     }
-    
-    function exporterPDF() {
-        window.print();
+    function appliquerFiltres() {
+        const exercice = document.getElementById('exerciceSelect').value;
+        const type = document.getElementById('typePeriodeSelect').value;
+        let url = 'DIMF_2006.php?exercice='+exercice+'&type_periode='+type;
+        if (type==='mensuel')   url+='&mois='+document.getElementById('moisSelect').value;
+        if (type==='trimestre') url+='&trimestre='+document.getElementById('trimestreSelect').value;
+        if (type==='semestre')  url+='&semestre='+document.getElementById('semestreSelect').value;
+        window.location.href = url;
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+        updateDynamicSelect();
+        document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect);
+    });
+    function exporterExcel() {
+        const wb = XLSX.utils.book_new();
+        const data = [['DIMF_2006 - CRÉDIT-BAIL'],['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],[],['CODE','LIBELLÉ','Durée','Brut','Amortissements','Net']];
+        <?php foreach($data as $item): ?>
+        data.push(['<?= $item['code'] ?>','<?= addslashes($item['libelle']) ?>','<?= $item['duree']?:'-' ?>',<?= $item['montant_brut'] ?>,<?= $item['amortissements'] ?>,<?= $item['montant_net'] ?>]);
+        <?php endforeach; ?>
+        data.push(['TOTAL','TOTAL GÉNÉRAL','',<?= $total_general_brut ?>,<?= $total_general_amor ?>,<?= $total_general_net ?>]);
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        XLSX.utils.book_append_sheet(wb, ws, "CREDIT_BAIL");
+        XLSX.writeFile(wb, 'DIMF_2006_<?= $exercice ?>_<?= $type_periode ?>.xlsx');
     }
 </script>
 </body>

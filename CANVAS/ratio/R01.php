@@ -1,12 +1,14 @@
 <?php
-// R01.php - Limitation des risques auxquels est exposée une institution
-// Norme BCEAO: 0% à 200% (0 - 2)
+// R01.php - Limitation des risques auxquels est exposée une institution (BCEAO)
+// Export PDF avec PDF_DIMF, export Excel (HTML .xls) bien structuré avec cellules fusionnées
 
 session_start();
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
 
-// Configuration BDD
+// ------------------------- CONNEXION BDD -------------------------
 $host = 'localhost';
-$dbname = 'mandigo';
+$dbname = 'microfinances_dg';
 $username = 'root';
 $password = '';
 
@@ -18,908 +20,612 @@ try {
     die("Erreur de connexion : " . $e->getMessage());
 }
 
-// Récupérer l'année et le mois
+// ------------------------- PARAMÈTRES -------------------------
 $exercice = isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y');
-$mois = isset($_GET['mois']) ? (int)$_GET['mois'] : date('m');
-$periode = $exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT);
-$date_fin_periode = $exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01';
-$date_fin_periode = date('Y-m-t', strtotime($date_fin_periode));
+$type_periode = isset($_GET['type_periode']) ? $_GET['type_periode'] : 'annuel';
+$mois = isset($_GET['mois']) ? (int)$_GET['mois'] : 12;
+$trimestre = isset($_GET['trimestre']) ? (int)$_GET['trimestre'] : 4;
+$semestre = isset($_GET['semestre']) ? (int)$_GET['semestre'] : 2;
 
-// ============================================================
-// A - RISQUES PORTÉS PAR L'INSTITUTION (MONTANTS NETS DES PROVISIONS)
-// ============================================================
-
-// A12 - Comptes ordinaires débiteurs chez les institutions financières
-$comptesOrdDebiteurs = 0;
-try {
-    $stmtA12 = $pdo->prepare("
-        SELECT COALESCE(SUM(solde), 0) as total
-        FROM comptes
-        WHERE solde > 0 AND statut = 'actif'
-    ");
-    $stmtA12->execute();
-    $resultA12 = $stmtA12->fetch();
-    $comptesOrdDebiteurs = $resultA12['total'];
-} catch (PDOException $e) {
-    $comptesOrdDebiteurs = 0;
+switch ($type_periode) {
+    case 'mensuel': break;
+    case 'trimestre': $mois = $trimestre * 3; break;
+    case 'semestre': $mois = ($semestre == 1) ? 6 : 12; break;
+    case 'annuel': $mois = 12; break;
+    default: $mois = 12;
 }
+$date_fin_periode = date('Y-m-t', strtotime("$exercice-" . str_pad($mois, 2, '0', STR_PAD_LEFT) . "-01"));
 
-// A2A - Autres comptes de dépôts chez les institutions financières
-$autresDepots = 0;
-try {
-    $stmtA2A = $pdo->prepare("
-        SELECT COALESCE(SUM(solde), 0) as total
-        FROM comptes
-        WHERE solde > 0 AND statut = 'actif'
-    ");
-    $stmtA2A->execute();
-    $resultA2A = $stmtA2A->fetch();
-    $autresDepots = $resultA2A['total'];
-} catch (PDOException $e) {
-    $autresDepots = 0;
-}
+// ------------------------- INITIALISATION VARIABLES -------------------------
+$comptesOrdDebiteurs = $autresDepots = $comptesPrets = $pretsSouffrance = $creditsCourtTerme = 0;
+$comptesOrdMembres = $creditsMoyenTerme = $creditsLongTerme = $creditsSouffrance = 0;
+$titresPlacement = $titresParticipation = $titresInvestissement = 0;
+$engagementsSignature = $engagementsMembres = $engagementsGarantie = $autresEngagements = 0;
+$depotsGarantieInstFin = $depotsGarantieMembres = 0;
+$comptesCrediteurs = $autresDepotsCrediteurs = $comptesEmprunts = $autresSommesDues = 0;
+$epargneSpeciale = $comptesCrediteursMembres = $depotsTerme = $autresDepotsClients = $empruntsClients = $autresSommesMembres = 0;
+$fondsPropres = 0;
 
-// A3A - Comptes de prêts
-$comptesPrets = 0;
+// ------------------------- CALCULS (requêtes identiques à la version validée) -------------------------
+// A12
 try {
-    $stmtA3A = $pdo->prepare("
-        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse, 0)), 0) as total
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(solde),0) as total FROM comptes WHERE solde > 0 AND statut='actif'");
+    $stmt->execute();
+    $comptesOrdDebiteurs = (float)$stmt->fetch()['total'];
+    $autresDepots = $comptesOrdDebiteurs;
+} catch (PDOException $e) {}
+
+// A3A
+try {
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse,0)),0) as total
         FROM dossiers d
-        LEFT JOIN (
-            SELECT dossier_id, SUM(montant) as rembourse
-            FROM echeances
-            WHERE statut = 'payee'
-            GROUP BY dossier_id
-        ) e ON d.dossier_id = e.dossier_id
-        WHERE d.statut IN ('actif', 'approuve')
+        LEFT JOIN (SELECT dossier_id, SUM(montant) as rembourse FROM echeances WHERE statut='payee' GROUP BY dossier_id) e ON d.dossier_id = e.dossier_id
+        WHERE d.statut IN ('actif','approuve')
     ");
-    $stmtA3A->execute();
-    $resultA3A = $stmtA3A->fetch();
-    $comptesPrets = $resultA3A['total'];
-} catch (PDOException $e) {
-    $comptesPrets = 0;
-}
+    $stmt->execute();
+    $comptesPrets = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// A70 - Prêts en souffrance
-$pretsSouffrance = 0;
+// A70
 try {
-    $stmtA70 = $pdo->prepare("
-        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse, 0)), 0) as total
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse,0)),0) as total
         FROM dossiers d
-        LEFT JOIN (
-            SELECT dossier_id, SUM(montant) as rembourse
-            FROM echeances
-            WHERE statut = 'payee'
-            GROUP BY dossier_id
-        ) e ON d.dossier_id = e.dossier_id
+        LEFT JOIN (SELECT dossier_id, SUM(montant) as rembourse FROM echeances WHERE statut='payee' GROUP BY dossier_id) e ON d.dossier_id = e.dossier_id
         WHERE d.statut = 'impaye'
     ");
-    $stmtA70->execute();
-    $resultA70 = $stmtA70->fetch();
-    $pretsSouffrance = $resultA70['total'];
-} catch (PDOException $e) {
-    $pretsSouffrance = 0;
-}
+    $stmt->execute();
+    $pretsSouffrance = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// B2D - Crédits à court terme (durée ≤ 12 mois)
-$creditsCourtTerme = 0;
+// B2D (durée ≤12)
 try {
-    $stmtB2D = $pdo->prepare("
-        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse, 0)), 0) as total
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse,0)),0) as total
         FROM dossiers d
-        LEFT JOIN (
-            SELECT dossier_id, SUM(montant) as rembourse
-            FROM echeances
-            WHERE statut = 'payee'
-            GROUP BY dossier_id
-        ) e ON d.dossier_id = e.dossier_id
-        WHERE d.statut IN ('actif', 'approuve')
-          AND d.duree <= 12
+        LEFT JOIN (SELECT dossier_id, SUM(montant) as rembourse FROM echeances WHERE statut='payee' GROUP BY dossier_id) e ON d.dossier_id = e.dossier_id
+        WHERE d.statut IN ('actif','approuve') AND d.duree <= 12
     ");
-    $stmtB2D->execute();
-    $resultB2D = $stmtB2D->fetch();
-    $creditsCourtTerme = $resultB2D['total'];
-} catch (PDOException $e) {
-    $creditsCourtTerme = 0;
-}
+    $stmt->execute();
+    $creditsCourtTerme = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// B2N - Comptes ordinaires débiteurs des membres
 $comptesOrdMembres = $comptesOrdDebiteurs;
 
-// B30 - Crédits à moyen terme (12 mois < durée ≤ 60 mois)
-$creditsMoyenTerme = 0;
+// B30 (13‑60)
 try {
-    $stmtB30 = $pdo->prepare("
-        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse, 0)), 0) as total
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse,0)),0) as total
         FROM dossiers d
-        LEFT JOIN (
-            SELECT dossier_id, SUM(montant) as rembourse
-            FROM echeances
-            WHERE statut = 'payee'
-            GROUP BY dossier_id
-        ) e ON d.dossier_id = e.dossier_id
-        WHERE d.statut IN ('actif', 'approuve')
-          AND d.duree > 12 AND d.duree <= 60
+        LEFT JOIN (SELECT dossier_id, SUM(montant) as rembourse FROM echeances WHERE statut='payee' GROUP BY dossier_id) e ON d.dossier_id = e.dossier_id
+        WHERE d.statut IN ('actif','approuve') AND d.duree BETWEEN 13 AND 60
     ");
-    $stmtB30->execute();
-    $resultB30 = $stmtB30->fetch();
-    $creditsMoyenTerme = $resultB30['total'];
-} catch (PDOException $e) {
-    $creditsMoyenTerme = 0;
-}
+    $stmt->execute();
+    $creditsMoyenTerme = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// B40 - Crédits à long terme (durée > 60 mois)
-$creditsLongTerme = 0;
+// B40 (>60)
 try {
-    $stmtB40 = $pdo->prepare("
-        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse, 0)), 0) as total
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse,0)),0) as total
         FROM dossiers d
-        LEFT JOIN (
-            SELECT dossier_id, SUM(montant) as rembourse
-            FROM echeances
-            WHERE statut = 'payee'
-            GROUP BY dossier_id
-        ) e ON d.dossier_id = e.dossier_id
-        WHERE d.statut IN ('actif', 'approuve')
-          AND d.duree > 60
+        LEFT JOIN (SELECT dossier_id, SUM(montant) as rembourse FROM echeances WHERE statut='payee' GROUP BY dossier_id) e ON d.dossier_id = e.dossier_id
+        WHERE d.statut IN ('actif','approuve') AND d.duree > 60
     ");
-    $stmtB40->execute();
-    $resultB40 = $stmtB40->fetch();
-    $creditsLongTerme = $resultB40['total'];
-} catch (PDOException $e) {
-    $creditsLongTerme = 0;
-}
+    $stmt->execute();
+    $creditsLongTerme = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// B70 - Crédits en souffrance
 $creditsSouffrance = $pretsSouffrance;
 
-// C10 - Titres de placement
-$titresPlacement = 0;
+// C10
 try {
-    $stmtC10 = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit - e.montant_credit), 0) as total
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(montant_debit - montant_credit),0) as total
         FROM ecritures_comptables e
         INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '50%'
-          AND e.date_ecriture <= :date_fin
+        WHERE pc.numero_compte LIKE '50%' AND e.date_ecriture <= :date_fin
     ");
-    $stmtC10->execute([':date_fin' => $date_fin_periode]);
-    $resultC10 = $stmtC10->fetch();
-    $titresPlacement = $resultC10['total'];
-} catch (PDOException $e) {
-    $titresPlacement = 0;
-}
+    $stmt->execute([':date_fin' => $date_fin_periode]);
+    $titresPlacement = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// D1E - Titres de participation
-$titresParticipation = 0;
+// D1E
 try {
-    $stmtD1E = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit - e.montant_credit), 0) as total
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(montant_debit - montant_credit),0) as total
         FROM ecritures_comptables e
         INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '26%'
-          AND e.date_ecriture <= :date_fin
+        WHERE pc.numero_compte LIKE '26%' AND e.date_ecriture <= :date_fin
     ");
-    $stmtD1E->execute([':date_fin' => $date_fin_periode]);
-    $resultD1E = $stmtD1E->fetch();
-    $titresParticipation = $resultD1E['total'];
-} catch (PDOException $e) {
-    $titresParticipation = 0;
-}
+    $stmt->execute([':date_fin' => $date_fin_periode]);
+    $titresParticipation = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// D1L - Titres d'investissement
-$titresInvestissement = 0;
+// D1L
 try {
-    $stmtD1L = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit - e.montant_credit), 0) as total
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(montant_debit - montant_credit),0) as total
         FROM ecritures_comptables e
         INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '27%'
-          AND e.date_ecriture <= :date_fin
+        WHERE pc.numero_compte LIKE '27%' AND e.date_ecriture <= :date_fin
     ");
-    $stmtD1L->execute([':date_fin' => $date_fin_periode]);
-    $resultD1L = $stmtD1L->fetch();
-    $titresInvestissement = $resultD1L['total'];
-} catch (PDOException $e) {
-    $titresInvestissement = 0;
-}
+    $stmt->execute([':date_fin' => $date_fin_periode]);
+    $titresInvestissement = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// N1A - Engagements par signature donnés en faveur des institutions financières
-$engagementsSignature = 0;
+// Engagements
 try {
-    $stmtN1A = $pdo->prepare("
-        SELECT COALESCE(SUM(g.valeur_nette), 0) as total
-        FROM garanties g
-        WHERE g.statut = 'actif'
-    ");
-    $stmtN1A->execute();
-    $resultN1A = $stmtN1A->fetch();
-    $engagementsSignature = $resultN1A['total'];
-} catch (PDOException $e) {
-    $engagementsSignature = 0;
-}
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(valeur_nette),0) as total FROM garanties WHERE statut='actif'");
+    $stmt->execute();
+    $engagementsSignature = (float)$stmt->fetch()['total'];
+    $engagementsMembres = $engagementsSignature;
+} catch (PDOException $e) {}
 
-// N1J - Engagements par signature donnés en faveur des membres
-$engagementsMembres = $engagementsSignature;
-
-// N3A - Engagements de garantie sur titre à livrer
-$engagementsGarantie = 0;
 try {
-    $stmtN3A = $pdo->prepare("
-        SELECT COALESCE(SUM(g.valeur_nette), 0) as total
-        FROM garanties g
-        WHERE g.code_type_garantie = '04' AND g.statut = 'actif'
-    ");
-    $stmtN3A->execute();
-    $resultN3A = $stmtN3A->fetch();
-    $engagementsGarantie = $resultN3A['total'];
-} catch (PDOException $e) {
-    $engagementsGarantie = 0;
-}
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(valeur_nette),0) as total FROM garanties WHERE code_type_garantie='04' AND statut='actif'");
+    $stmt->execute();
+    $engagementsGarantie = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// Q1A - Autres engagements donnés par signature
 $autresEngagements = 0;
 
-// Éléments à déduire
-// F2C - Dépôts de Garantie sur les prêts aux institutions financières
-$depotsGarantieInstFin = 0;
+// Déductions
 try {
-    $stmtF2C = $pdo->prepare("
-        SELECT COALESCE(SUM(solde), 0) as total
-        FROM comptes
-        WHERE solde < 0 AND statut = 'actif'
-    ");
-    $stmtF2C->execute();
-    $resultF2C = $stmtF2C->fetch();
-    $depotsGarantieInstFin = abs($resultF2C['total']);
-} catch (PDOException $e) {
-    $depotsGarantieInstFin = 0;
-}
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(ABS(solde)),0) as total FROM comptes WHERE solde < 0 AND statut='actif'");
+    $stmt->execute();
+    $depotsGarantieInstFin = abs((float)$stmt->fetch()['total']);
+    $depotsGarantieMembres = $depotsGarantieInstFin;
+} catch (PDOException $e) {}
 
-// G30 - Dépôts de Garantie sur les crédits aux membres/clients
-$depotsGarantieMembres = $depotsGarantieInstFin;
-
-// TOTAL A - Risques portés par l'institution (nets)
-$totalA_brut = $comptesOrdDebiteurs + $autresDepots + $comptesPrets + $pretsSouffrance 
+$totalA_brut = $comptesOrdDebiteurs + $autresDepots + $comptesPrets + $pretsSouffrance
              + $creditsCourtTerme + $comptesOrdMembres + $creditsMoyenTerme + $creditsLongTerme
              + $creditsSouffrance + $titresPlacement + $titresParticipation + $titresInvestissement
              + $engagementsSignature + $engagementsMembres + $engagementsGarantie + $autresEngagements;
-
 $totalA_deductions = $depotsGarantieInstFin + $depotsGarantieMembres;
 $montantA = $totalA_brut - $totalA_deductions;
 
-// ============================================================
-// B - RESSOURCES
-// ============================================================
-
-// F1A - Comptes ordinaires créditeurs des institutions financières
-$comptesCrediteurs = 0;
+// Ressources
 try {
-    $stmtF1A = $pdo->prepare("
-        SELECT COALESCE(SUM(ABS(solde)), 0) as total
-        FROM comptes
-        WHERE solde < 0 AND statut = 'actif'
-    ");
-    $stmtF1A->execute();
-    $resultF1A = $stmtF1A->fetch();
-    $comptesCrediteurs = $resultF1A['total'];
-} catch (PDOException $e) {
-    $comptesCrediteurs = 0;
-}
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(ABS(solde)),0) as total FROM comptes WHERE solde < 0 AND statut='actif'");
+    $stmt->execute();
+    $comptesCrediteurs = (float)$stmt->fetch()['total'];
+    $autresDepotsCrediteurs = $comptesCrediteurs;
+    $comptesCrediteursMembres = $comptesCrediteurs;
+} catch (PDOException $e) {}
 
-// F2A - Autres comptes de dépôts créditeurs des institutions financières
-$autresDepotsCrediteurs = $comptesCrediteurs;
-
-// F3A - Comptes d'emprunts
-$comptesEmprunts = 0;
 try {
-    $stmtF3A = $pdo->prepare("
-        SELECT COALESCE(SUM(montant), 0) as total
-        FROM capital
-        WHERE statut = 'valide' AND mode_paiement = 'BANQUE'
-    ");
-    $stmtF3A->execute();
-    $resultF3A = $stmtF3A->fetch();
-    $comptesEmprunts = $resultF3A['total'];
-} catch (PDOException $e) {
-    $comptesEmprunts = 0;
-}
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant),0) as total FROM capital WHERE statut='valide' AND mode_paiement='BANQUE'");
+    $stmt->execute();
+    $comptesEmprunts = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// F50 - Autres sommes dues aux institutions financières
 $autresSommesDues = 0;
 
-// G2A - Comptes d'épargne à régime spécial
-$epargneSpeciale = 0;
 try {
-    $stmtG2A = $pdo->prepare("
-        SELECT COALESCE(SUM(c.solde), 0) as total
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(c.solde),0) as total
         FROM comptes c
         INNER JOIN produits p ON c.produit_id = p.produit_id
         INNER JOIN produits_familles pf ON p.famille_id = pf.famille_id
-        WHERE pf.categorie = 'Epargne' AND c.statut = 'actif' AND c.solde > 0
+        WHERE pf.categorie = 'Epargne' AND c.statut='actif' AND c.solde>0
     ");
-    $stmtG2A->execute();
-    $resultG2A = $stmtG2A->fetch();
-    $epargneSpeciale = $resultG2A['total'];
-} catch (PDOException $e) {
-    $epargneSpeciale = 0;
-}
+    $stmt->execute();
+    $epargneSpeciale = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// G10 - Comptes ordinaires créditeurs des membres
-$comptesCrediteursMembres = $comptesCrediteurs;
-
-// G15 - Dépôts à terme reçus des membres
-$depotsTerme = 0;
 try {
-    $stmtG15 = $pdo->prepare("
-        SELECT COALESCE(SUM(capital_initial), 0) as total
-        FROM comptes_dat
-        WHERE statut = 'en cours'
-    ");
-    $stmtG15->execute();
-    $resultG15 = $stmtG15->fetch();
-    $depotsTerme = $resultG15['total'];
-} catch (PDOException $e) {
-    $depotsTerme = 0;
-}
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(capital_initial),0) as total FROM comptes_dat WHERE statut='en cours'");
+    $stmt->execute();
+    $depotsTerme = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
 
-// G35 - Autres dépôts reçus des clients
 $autresDepotsClients = 0;
-
-// G60 - Emprunts reçus des clients
 $empruntsClients = 0;
-
-// G70 - Autres sommes dues aux membres
 $autresSommesMembres = 0;
 
-// L01 - Provisions, fonds propres et assimilés
-$fondsPropres = 0;
 try {
-    $stmtL01 = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as total
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(montant_credit - montant_debit),0) as total
         FROM ecritures_comptables e
         INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.classe_compte = '1'
-          AND e.date_ecriture <= :date_fin
+        WHERE pc.classe_compte = '1' AND e.date_ecriture <= :date_fin
     ");
-    $stmtL01->execute([':date_fin' => $date_fin_periode]);
-    $resultL01 = $stmtL01->fetch();
-    $fondsPropres = $resultL01['total'];
-} catch (PDOException $e) {
-    $fondsPropres = 0;
+    $stmt->execute([':date_fin' => $date_fin_periode]);
+    $fondsPropres = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) {}
+
+if ($fondsPropres == 0) {
+    try {
+        $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant),0) as total FROM capital WHERE statut='valide' AND date_creation <= :date_fin");
+        $stmt->execute([':date_fin' => $date_fin_periode]);
+        $fondsPropres = (float)$stmt->fetch()['total'];
+    } catch (PDOException $e) {}
 }
 
-// TOTAL B
 $montantB = $comptesCrediteurs + $autresDepotsCrediteurs + $comptesEmprunts + $autresSommesDues
           + $epargneSpeciale + $comptesCrediteursMembres + $depotsTerme + $autresDepotsClients
           + $empruntsClients + $autresSommesMembres + $fondsPropres;
+if ($montantB <= 0) $montantB = 1;
+$ratioR01 = $montantA / $montantB;
+$pourcentageRisques = $ratioR01 * 100;
+$conformite = ($ratioR01 >= 0 && $ratioR01 <= 2) ? 'CONFORME' : 'NON_CONFORME';
 
-// ============================================================
-// CALCUL DU RATIO R01
-// ============================================================
+// ------------------------- PRÉPARATION DES DONNÉES -------------------------
+$lignesRisques = [
+    ['code'=>'A12','lib'=>'Comptes ordinaires débiteurs chez les institutions financières','montant'=>$comptesOrdDebiteurs],
+    ['code'=>'A2A','lib'=>'Autres comptes de dépôts chez les institutions financières','montant'=>$autresDepots],
+    ['code'=>'A3A','lib'=>'Comptes de prêts','montant'=>$comptesPrets],
+    ['code'=>'A70','lib'=>'Prêts en souffrance','montant'=>$pretsSouffrance],
+    ['code'=>'B2D','lib'=>'Crédits à court terme','montant'=>$creditsCourtTerme],
+    ['code'=>'B2N','lib'=>'Comptes ordinaires débiteurs des membres, bénéficiaires ou clients','montant'=>$comptesOrdMembres],
+    ['code'=>'B30','lib'=>'Crédits à moyen terme','montant'=>$creditsMoyenTerme],
+    ['code'=>'B40','lib'=>'Crédits à long terme','montant'=>$creditsLongTerme],
+    ['code'=>'B70','lib'=>'Crédits en souffrance','montant'=>$creditsSouffrance],
+    ['code'=>'C10','lib'=>'Titres de placement','montant'=>$titresPlacement],
+    ['code'=>'D1E','lib'=>'Titres de participation','montant'=>$titresParticipation],
+    ['code'=>'D1L','lib'=>'Titres d\'investissement','montant'=>$titresInvestissement],
+    ['code'=>'N1A','lib'=>'Engagements par signature donnés en faveur des institutions financières','montant'=>$engagementsSignature],
+    ['code'=>'N1J','lib'=>'Engagements par signature donnés en faveur des membres bénéficiaires ou clients','montant'=>$engagementsMembres],
+    ['code'=>'N3A','lib'=>'Engagements de garantie sur titre à livrer','montant'=>$engagementsGarantie],
+    ['code'=>'Q1A','lib'=>'Autres engagements donnés par signature','montant'=>$autresEngagements],
+];
+$lignesDeductions = [
+    ['code'=>'F2C','lib'=>'Dépôts de Garantie sur les prêts aux institutions financières','montant'=>$depotsGarantieInstFin],
+    ['code'=>'G30','lib'=>'Dépôts de Garantie sur les crédits aux membres/clients','montant'=>$depotsGarantieMembres],
+];
+$lignesRessources = [
+    ['code'=>'F1A','lib'=>'Comptes ordinaires créditeurs des institutions financières','montant'=>$comptesCrediteurs],
+    ['code'=>'F2A','lib'=>'Autres comptes de dépôts créditeurs des institutions financières','montant'=>$autresDepotsCrediteurs],
+    ['code'=>'F3A','lib'=>'Comptes d\'emprunts','montant'=>$comptesEmprunts],
+    ['code'=>'F50','lib'=>'Autres sommes dues aux institutions financières','montant'=>$autresSommesDues],
+    ['code'=>'G2A','lib'=>'Comptes d\'épargne à régime spécial','montant'=>$epargneSpeciale],
+    ['code'=>'G10','lib'=>'Comptes ordinaires créditeurs des membres, bénéficiaires ou clients','montant'=>$comptesCrediteursMembres],
+    ['code'=>'G15','lib'=>'Dépôts à terme reçus des membres, bénéficiaires ou clients','montant'=>$depotsTerme],
+    ['code'=>'G35','lib'=>'Autres dépôts reçus des clients, membres ou bénéficiaires','montant'=>$autresDepotsClients],
+    ['code'=>'G60','lib'=>'Emprunts reçus des clients, membres ou bénéficiaires','montant'=>$empruntsClients],
+    ['code'=>'G70','lib'=>'Autres sommes dues aux membres, bénéficiaires ou clients','montant'=>$autresSommesMembres],
+    ['code'=>'L01','lib'=>'Provisions, fonds propres et assimilés','montant'=>$fondsPropres],
+];
 
-if ($montantB <= 0) {
-    $montantB = 1;
-    $ratioR01 = 0;
-} else {
-    $ratioR01 = $montantA / $montantB;
+// ------------------------- EXPORT PDF AVEC PDF_DIMF -------------------------
+if (isset($_GET['export']) && $_GET['export'] === 'pdf') {
+    require_once('../../fpdf/fpdf.php');
+
+    class PDF_DIMF extends FPDF {
+        public $codeDimf  = 'R01';
+        public $titreDimf = 'LIMITATION DES RISQUES AUXQUELS EST EXPOSEE UNE INSTITUTION';
+        public $nomSfd    = 'SFD';
+        public $periode   = '';
+        public $exercice  = '';
+
+        static function u($str) {
+            return iconv('UTF-8', 'ISO-8859-1//TRANSLIT', $str);
+        }
+
+        function Header() {
+            $this->SetFillColor(156, 163, 175);
+            $this->Rect(0, 0, $this->GetPageWidth(), 28, 'F');
+            $this->SetFont('Arial', '', 7);
+            $this->SetTextColor(255, 255, 255);
+            $this->SetXY(8, 3);
+            $this->Cell(0, 4, self::u('République de Côte d\'Ivoire  •  Ministère de l\'Economie et des Finances  -  DGTCP / DSFD'), 0, 1, 'L');
+            $this->SetFont('Arial', 'B', 13);
+            $this->SetTextColor(255, 255, 255);
+            $this->SetX(8);
+            $this->Cell(0, 7, self::u($this->codeDimf . '  -  ' . $this->titreDimf), 0, 1, 'L');
+            $this->SetFont('Arial', '', 8);
+            $this->SetTextColor(255, 255, 255);
+            $this->SetX(8);
+            $this->Cell(0, 5, self::u(
+                'SFD : ' . $this->nomSfd .
+                '   |   Période : ' . $this->periode .
+                '   |   Exercice : ' . $this->exercice .
+                '   |   Arrêté au : ' . date('d/m/Y', strtotime($GLOBALS['date_fin_periode']))
+            ), 0, 1, 'L');
+            $this->SetTextColor(0, 0, 0);
+            $this->Ln(4);
+        }
+
+        function Footer() {
+            $this->SetY(-12);
+            $this->SetFont('Arial', 'I', 7);
+            $this->SetTextColor(100, 116, 139);
+            $this->Cell(0, 4, self::u(
+                'SICS-BCEAO  •  Généré le ' . date('d/m/Y H:i:s') .
+                '  •  Page ' . $this->PageNo() . '/{nb}'),
+                0, 0, 'C');
+        }
+
+        function SectionTitle($label) {
+            $this->SetFont('Arial', 'B', 9);
+            $this->SetFillColor(0, 0, 0);
+            $this->SetTextColor(255, 255, 255);
+            $this->Cell(0, 7, self::u('  ' . strtoupper($label)), 0, 1, 'L', true);
+            $this->SetTextColor(0, 0, 0);
+            $this->Ln(1);
+        }
+
+        function TableHeader($cols) {
+            $this->SetFont('Arial', 'B', 8);
+            $this->SetFillColor(248, 250, 252);
+            $this->SetTextColor(30, 41, 59);
+            $this->SetDrawColor(226, 232, 240);
+            $this->SetLineWidth(0.2);
+            foreach ($cols as $col) {
+                $align = isset($col['align']) ? $col['align'] : 'L';
+                $this->Cell($col['w'], 6, self::u($col['label']), 1, 0, $align, true);
+            }
+            $this->Ln();
+        }
+
+        function TableRow($cols, $data, $style = '') {
+            switch ($style) {
+                case 'subtotal':
+                    $this->SetFillColor(248, 250, 252);
+                    $this->SetFont('Arial', 'B', 8);
+                    $fill = true; break;
+                case 'total':
+                    $this->SetFillColor(240, 253, 244);
+                    $this->SetFont('Arial', 'B', 8.5);
+                    $fill = true; break;
+                default:
+                    $this->SetFillColor(255, 255, 255);
+                    $this->SetFont('Arial', '', 7.5);
+                    $fill = false; break;
+            }
+            $this->SetTextColor(15, 23, 42);
+            $this->SetDrawColor(226, 232, 240);
+            $this->SetLineWidth(0.1);
+            foreach ($cols as $i => $col) {
+                $val   = isset($data[$i]) ? $data[$i] : '';
+                $align = isset($col['align']) ? $col['align'] : 'L';
+                $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
+            }
+            $this->Ln();
+        }
+
+        static function montant($val) {
+            return number_format((float)$val, 0, ',', ' ') . ' F';
+        }
+    }
+
+    $pdf = new PDF_DIMF();
+    $pdf->AliasNbPages();
+    $pdf->codeDimf  = 'R01';
+    $pdf->titreDimf = 'LIMITATION DES RISQUES AUXQUELS EST EXPOSEE UNE INSTITUTION';
+    $pdf->nomSfd    = 'SFD'; // À remplacer par le vrai nom si disponible
+    $pdf->periode   = ucfirst($type_periode);
+    $pdf->exercice  = $exercice;
+    $pdf->AddPage();
+
+    $cols = [
+        ['w' => 30, 'label' => 'Acc', 'align' => 'L'],
+        ['w' => 100, 'label' => 'A', 'align' => 'L'],
+        ['w' => 50, 'label' => 'MONTANT (FCFA)', 'align' => 'R']
+    ];
+
+    // Section A – Risques bruts
+    $pdf->SectionTitle("A - RISQUES PORTES PAR L'INSTITUTION (MONTANTS NETS DES PROVISIONS)");
+    $pdf->TableHeader($cols);
+    foreach ($lignesRisques as $row) {
+        $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
+    }
+    $pdf->TableRow($cols, ['', 'TOTAL BRUT', PDF_DIMF::montant($totalA_brut)], 'subtotal');
+
+    if (!empty($lignesDeductions)) {
+        $pdf->Ln(2);
+        $pdf->SectionTitle("Eléments à déduire");
+        $pdf->TableHeader($cols);
+        foreach ($lignesDeductions as $row) {
+            $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
+        }
+        $pdf->TableRow($cols, ['', 'TOTAL RISQUES NETS (A)', PDF_DIMF::montant($montantA)], 'total');
+    } else {
+        $pdf->TableRow($cols, ['', 'TOTAL RISQUES NETS (A)', PDF_DIMF::montant($montantA)], 'total');
+    }
+
+    $pdf->Ln(5);
+
+    // Section B – Ressources
+    $pdf->SectionTitle("B - RESSOURCES");
+    $pdf->TableHeader($cols);
+    foreach ($lignesRessources as $row) {
+        $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
+    }
+    $pdf->TableRow($cols, ['', 'TOTAL RESSOURCES (B)', PDF_DIMF::montant($montantB)], 'total');
+
+    $pdf->Ln(5);
+    $pdf->SetFont('Arial', 'B', 10);
+    $pdf->Cell(0, 7, PDF_DIMF::u("RATIO R01 = A / B = " . number_format($pourcentageRisques, 2) . "%"), 0, 1);
+    $pdf->SetFont('Arial', '', 9);
+    $pdf->MultiCell(0, 5, PDF_DIMF::u("Norme BCEAO : 0% ≤ Ratio ≤ 200%\nConformité : " . $conformite));
+
+    $pdf->Output('I', 'R01_' . $exercice . '_' . $type_periode . '.pdf');
+    exit;
 }
 
-// Normes : 0% à 200%
-$normeMin = 0;
-$normeMax = 2;
-$conformite = ($ratioR01 >= $normeMin && $ratioR01 <= $normeMax) ? 'CONFORME' : 'NON_CONFORME';
-$pourcentageRisques = $ratioR01 * 100;
+// ------------------------- EXPORT EXCEL (HTML .xls) AVEC FUSIONS DE CELLULES -------------------------
+if (isset($_GET['export']) && $_GET['export'] === 'excel') {
+    header('Content-Type: application/vnd.ms-excel');
+    header('Content-Disposition: attachment; filename="R01_' . $exercice . '_' . $type_periode . '.xls"');
+    header('Cache-Control: max-age=0');
+    echo '<html><head><meta charset="UTF-8"><style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h2 { color: #1a3a5c; font-size: 16pt; }
+        h3 { color: #1a3a5c; font-size: 14pt; margin-top: 20px; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 10pt; }
+        th, td { border: 1px solid #999; padding: 8px; vertical-align: top; }
+        th { background: #f2f2f2; text-align: center; font-weight: bold; }
+        .text-right { text-align: right; }
+        .text-left { text-align: left; }
+        .total-row { background: #e8f5e9; font-weight: bold; }
+        .subtotal-row { background: #f0f7ff; font-weight: bold; }
+        .section-title { background: #d9e8f5; font-weight: bold; font-size: 11pt; }
+        .montant { font-family: "Courier New", monospace; }
+    </style></head><body>';
+    echo '<h2>R01 - LIMITATION DES RISQUES AUXQUELS EST EXPOSEE UNE INSTITUTION</h2>';
+    echo '<p><strong>Période :</strong> ' . $exercice . ' - ' . ucfirst($type_periode) . ' (arrêtée au ' . date('d/m/Y', strtotime($date_fin_periode)) . ')</p>';
 
-// Détail des postes pour affichage
-$detailsRisques = [
-    ['code' => 'A12', 'libelle' => 'Comptes ordinaires débiteurs chez les institutions financières', 'montant' => $comptesOrdDebiteurs],
-    ['code' => 'A2A', 'libelle' => 'Autres comptes de dépôts chez les institutions financières', 'montant' => $autresDepots],
-    ['code' => 'A3A', 'libelle' => 'Comptes de prêts', 'montant' => $comptesPrets],
-    ['code' => 'A70', 'libelle' => 'Prêts en souffrance', 'montant' => $pretsSouffrance],
-    ['code' => 'B2D', 'libelle' => 'Crédits à court terme', 'montant' => $creditsCourtTerme],
-    ['code' => 'B2N', 'libelle' => 'Comptes ordinaires débiteurs des membres', 'montant' => $comptesOrdMembres],
-    ['code' => 'B30', 'libelle' => 'Crédits à moyen terme', 'montant' => $creditsMoyenTerme],
-    ['code' => 'B40', 'libelle' => 'Crédits à long terme', 'montant' => $creditsLongTerme],
-    ['code' => 'B70', 'libelle' => 'Crédits en souffrance', 'montant' => $creditsSouffrance],
-    ['code' => 'C10', 'libelle' => 'Titres de placement', 'montant' => $titresPlacement],
-    ['code' => 'D1E', 'libelle' => 'Titres de participation', 'montant' => $titresParticipation],
-    ['code' => 'D1L', 'libelle' => 'Titres d\'investissement', 'montant' => $titresInvestissement],
-    ['code' => 'N1A', 'libelle' => 'Engagements par signature - institutions financières', 'montant' => $engagementsSignature],
-    ['code' => 'N1J', 'libelle' => 'Engagements par signature - membres', 'montant' => $engagementsMembres],
-    ['code' => 'N3A', 'libelle' => 'Engagements de garantie sur titre à livrer', 'montant' => $engagementsGarantie],
-    ['code' => 'Q1A', 'libelle' => 'Autres engagements donnés par signature', 'montant' => $autresEngagements],
-];
+    // --- Section A : Risques bruts + déductions + total net ---
+    echo '<h3>A - RISQUES PORTÉS PAR L\'INSTITUTION (MONTANTS NETS DES PROVISIONS)</h3>';
+    echo '<table>';
+    echo '<tr><th>Acc</th><th>A</th><th class="text-right">MONTANT (FCFA)</th></tr>';
+    foreach ($lignesRisques as $r) {
+        echo '<tr><td style="width:10%">' . $r['code'] . '</td><td style="width:70%">' . $r['lib'] . '</td><td class="text-right" style="width:20%">' . number_format($r['montant'], 0, ',', ' ') . '</td></tr>';
+    }
+    echo '<tr class="subtotal-row"><td colspan="2">TOTAL BRUT</td><td class="text-right">' . number_format($totalA_brut, 0, ',', ' ') . '</td></tr>';
+    if (!empty($lignesDeductions)) {
+        foreach ($lignesDeductions as $d) {
+            echo '<tr><td>' . $d['code'] . '</td><td>' . $d['lib'] . '</td><td class="text-right">' . number_format($d['montant'], 0, ',', ' ') . '</td></tr>';
+        }
+        echo '<tr class="total-row"><td colspan="2">TOTAL RISQUES NETS (A)</td><td class="text-right">' . number_format($montantA, 0, ',', ' ') . '</td></tr>';
+    } else {
+        echo '<tr class="total-row"><td colspan="2">TOTAL RISQUES NETS (A)</td><td class="text-right">' . number_format($montantA, 0, ',', ' ') . '</td></tr>';
+    }
+    echo '</table>';
 
-$detailsDeductions = [
-    ['code' => 'F2C', 'libelle' => 'Dépôts de Garantie sur les prêts aux institutions financières', 'montant' => $depotsGarantieInstFin],
-    ['code' => 'G30', 'libelle' => 'Dépôts de Garantie sur les crédits aux membres/clients', 'montant' => $depotsGarantieMembres],
-];
+    // --- Section B : Ressources ---
+    echo '<h3>B - RESSOURCES</h3>';
+    echo '<table>';
+    echo '<tr><th>Acc</th><th>A</th><th class="text-right">MONTANT (FCFA)</th></tr>';
+    foreach ($lignesRessources as $rs) {
+        echo '<tr><td style="width:10%">' . $rs['code'] . '</td><td style="width:70%">' . $rs['lib'] . '</td><td class="text-right" style="width:20%">' . number_format($rs['montant'], 0, ',', ' ') . '</td></tr>';
+    }
+    echo '<tr class="total-row"><td colspan="2">TOTAL RESSOURCES (B)</td><td class="text-right">' . number_format($montantB, 0, ',', ' ') . '</td></tr>';
+    echo '</table>';
 
-$detailsRessources = [
-    ['code' => 'F1A', 'libelle' => 'Comptes ordinaires créditeurs des institutions financières', 'montant' => $comptesCrediteurs],
-    ['code' => 'F2A', 'libelle' => 'Autres comptes de dépôts créditeurs des institutions financières', 'montant' => $autresDepotsCrediteurs],
-    ['code' => 'F3A', 'libelle' => 'Comptes d\'emprunts', 'montant' => $comptesEmprunts],
-    ['code' => 'F50', 'libelle' => 'Autres sommes dues aux institutions financières', 'montant' => $autresSommesDues],
-    ['code' => 'G2A', 'libelle' => 'Comptes d\'épargne à régime spécial', 'montant' => $epargneSpeciale],
-    ['code' => 'G10', 'libelle' => 'Comptes ordinaires créditeurs des membres', 'montant' => $comptesCrediteursMembres],
-    ['code' => 'G15', 'libelle' => 'Dépôts à terme reçus des membres', 'montant' => $depotsTerme],
-    ['code' => 'G35', 'libelle' => 'Autres dépôts reçus des clients', 'montant' => $autresDepotsClients],
-    ['code' => 'G60', 'libelle' => 'Emprunts reçus des clients', 'montant' => $empruntsClients],
-    ['code' => 'G70', 'libelle' => 'Autres sommes dues aux membres', 'montant' => $autresSommesMembres],
-    ['code' => 'L01', 'libelle' => 'Provisions, fonds propres et assimilés', 'montant' => $fondsPropres],
-];
+    // --- Ratio et interprétation ---
+    echo '<p><strong>RATIO R01 = A / B = ' . number_format($pourcentageRisques, 2) . '%</strong></p>';
+    echo '<p>Norme BCEAO : 0% à 200%<br>Conformité : ' . $conformite . '</p>';
+    echo '</body></html>';
+    exit;
+}
+
+// ------------------------- AFFICHAGE WEB (INTERFACE DIMF_2000) -------------------------
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>R01 - Limitation des risques auxquels est exposée une institution</title>
+    <title>R01 - Limitation des risques (BCEAO)</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f0f2f5;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #1a3a5c, #0d2137);
-            color: white;
-            padding: 25px 30px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        
-        .header h1 {
-            font-size: 1.8rem;
-            margin-bottom: 8px;
-        }
-        
-        .header .subtitle {
-            opacity: 0.9;
-            font-size: 0.95rem;
-        }
-        
-        .badge {
-            display: inline-block;
-            background: #ffc107;
-            color: #1a3a5c;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: bold;
-            margin-top: 10px;
-        }
-        
-        .filters {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            display: flex;
-            gap: 15px;
-            align-items: flex-end;
-            flex-wrap: wrap;
-        }
-        
-        .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .filter-group label {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: #555;
-        }
-        
-        .filter-group select, .filter-group input {
-            padding: 8px 15px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 0.9rem;
-        }
-        
-        .btn {
-            padding: 8px 20px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s;
-        }
-        
-        .btn-primary {
-            background: #1a3a5c;
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background: #0d2137;
-        }
-        
-        .ratio-card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
-        
-        .ratio-title {
-            font-size: 1.1rem;
-            color: #555;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #e0e0e0;
-        }
-        
-        .ratio-value-container {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 20px;
-        }
-        
-        .ratio-value {
-            text-align: center;
-        }
-        
-        .ratio-value .value {
-            font-size: 3rem;
-            font-weight: bold;
-        }
-        
-        .ratio-value .label {
-            color: #777;
-            font-size: 0.85rem;
-        }
-        
-        .conforme {
-            color: #2e7d32;
-        }
-        
-        .non-conforme {
-            color: #c62828;
-        }
-        
-        .norme {
-            background: #f5f5f5;
-            padding: 10px 20px;
-            border-radius: 8px;
-            text-align: center;
-        }
-        
-        .norme .title {
-            font-weight: 600;
-            margin-bottom: 5px;
-        }
-        
-        .norme .range {
-            font-size: 1.3rem;
-            font-weight: bold;
-            color: #1a3a5c;
-        }
-        
-        .status-badge {
-            display: inline-block;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 0.85rem;
-        }
-        
-        .status-conforme {
-            background: #e8f5e9;
-            color: #2e7d32;
-        }
-        
-        .status-non-conforme {
-            background: #ffebee;
-            color: #c62828;
-        }
-        
-        .data-table {
-            background: white;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            margin-bottom: 25px;
-        }
-        
-        .data-table h3 {
-            padding: 15px 20px;
-            background: #f8f9fa;
-            border-bottom: 1px solid #e0e0e0;
-            font-size: 1rem;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        
-        th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
-        }
-        
-        tr:hover {
-            background: #f8f9fa;
-        }
-        
-        .text-right {
-            text-align: right;
-        }
-        
-        .footer {
-            text-align: center;
-            padding: 20px;
-            color: #777;
-            font-size: 0.8rem;
-        }
-        
-        .two-columns {
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-        
-        .two-columns > div {
-            flex: 1;
-            min-width: 300px;
-        }
-        
-        .progress-bar {
-            background: #e0e0e0;
-            border-radius: 10px;
-            height: 20px;
-            overflow: hidden;
-            margin: 10px 0;
-        }
-        
-        .progress-fill {
-            background: linear-gradient(90deg, #2e7d32, #4caf50);
-            height: 100%;
-            border-radius: 10px;
-            transition: width 0.5s ease;
-            text-align: center;
-            color: white;
-            font-size: 0.7rem;
-            line-height: 20px;
-        }
-        
-        .progress-fill.non-conforme {
-            background: linear-gradient(90deg, #c62828, #f44336);
-        }
-        
-        @media (max-width: 768px) {
-            .ratio-value-container {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .filters {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .two-columns {
-                flex-direction: column;
-            }
-        }
+        /* Styles DIMF_2000 (inchangés) */
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Inter',system-ui,sans-serif; background:#f1f5f9; padding:24px; }
+        .dashboard { max-width:1400px; margin:0 auto; }
+        .page-header { background:linear-gradient(135deg,#3b82f6,#60a5fa); border-radius:24px; padding:20px 28px; margin-bottom:24px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; }
+        .header-left h1 { font-size:1.6rem; font-weight:600; color:white; display:flex; align-items:center; gap:10px; }
+        .subtitle { font-size:0.8rem; color:#e0f2fe; }
+        .badge { background:#2563eb; color:white; padding:4px 12px; border-radius:30px; display:inline-block; margin-top:8px; }
+        .btn-group { display:flex; gap:12px; }
+        .btn-excel, .btn-pdf { padding:8px 20px; border-radius:40px; font-weight:500; border:none; cursor:pointer; }
+        .btn-excel { background:#10b981; color:white; }
+        .btn-pdf { background:#ef4444; color:white; }
+        .card { background:white; border-radius:20px; padding:20px 24px; margin-bottom:24px; box-shadow:0 1px 3px rgba(0,0,0,0.05); }
+        .card-header { display:flex; align-items:center; gap:10px; border-bottom:1px solid #eef2f6; padding-bottom:12px; margin-bottom:16px; font-weight:600; color:#1e40af; }
+        .filters-row { display:flex; flex-wrap:wrap; align-items:flex-end; gap:20px; }
+        .filter-item { display:flex; flex-direction:column; gap:6px; }
+        .filter-item label { font-size:0.7rem; font-weight:600; text-transform:uppercase; color:#4b5563; }
+        .filter-item select, .filter-item input { padding:8px 14px; border:1px solid #d1d5db; border-radius:12px; }
+        .btn-apply { background:#3b82f6; color:white; border:none; border-radius:40px; padding:8px 24px; cursor:pointer; }
+        .ratio-card { background:linear-gradient(145deg,#f8fafc,#fff); border-radius:20px; padding:24px; margin-bottom:24px; border:1px solid #e2e8f0; }
+        .ratio-value { font-size:3rem; font-weight:800; }
+        .ratio-value.conforme { color:#10b981; }
+        .ratio-value.non-conforme { color:#ef4444; }
+        .norme-box { background:#f1f5f9; border-radius:16px; padding:12px 20px; text-align:center; }
+        .progress-bar { background:#e2e8f0; border-radius:50px; height:24px; overflow:hidden; margin-top:20px; }
+        .progress-fill { background:linear-gradient(90deg,#3b82f6,#60a5fa); height:100%; border-radius:50px; text-align:center; color:white; font-size:0.75rem; line-height:24px; }
+        .table-wrapper { overflow-x:auto; }
+        table { width:100%; border-collapse:collapse; }
+        th, td { padding:12px 16px; text-align:left; border-bottom:1px solid #f1f5f9; }
+        th { background:#f8fafc; font-weight:600; }
+        .text-right { text-align:right; }
+        .total-row { background:#f0fdf4; font-weight:700; }
+        .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px; border-radius:16px; display:flex; align-items:center; gap:14px; }
+        .two-columns { display:flex; gap:24px; flex-wrap:wrap; }
+        .two-columns .card { flex:1; min-width:320px; }
+        .page-footer { text-align:center; font-size:0.75rem; color:#6b7280; margin-top:16px; }
+        @media print { .btn-group, .filters-row, #filtersCard { display:none; } }
     </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1>R01 - Limitation des risques auxquels est exposée une institution</h1>
-        <div class="subtitle">
-            République de Côte d'Ivoire / Ministère de l'Economie et des Finances<br>
-            Direction Générale du Trésor et de la Comptabilité Publique (DGTCP)<br>
-            Direction des Systèmes Financiers Décentralisés (DSFD)
+<div class="dashboard">
+    <div class="page-header">
+        <div class="header-left">
+            <h1><i class="fas fa-shield-alt"></i> R01 - LIMITATION DES RISQUES</h1>
+            <div class="subtitle">République de Côte d'Ivoire / DGTCP / DSFD</div>
+            <div class="badge">Norme BCEAO : 0% ≤ Ratio ≤ 200%</div>
         </div>
-        <div class="badge">Norme BCEAO : 0% à 200%</div>
-    </div>
-    
-    <div class="filters">
-        <div class="filter-group">
-            <label>Exercice</label>
-            <select name="exercice" id="exercice">
-                <?php for($y = 2020; $y <= date('Y')+1; $y++): ?>
-                    <option value="<?= $y ?>" <?= $y == $exercice ? 'selected' : '' ?>><?= $y ?></option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Mois</label>
-            <select name="mois" id="mois">
-                <?php for($m = 1; $m <= 12; $m++): ?>
-                    <option value="<?= $m ?>" <?= $m == $mois ? 'selected' : '' ?>>
-                        <?= str_pad($m, 2, '0', STR_PAD_LEFT) ?> - 
-                        <?= date('F', mktime(0,0,0,$m,1)) ?>
-                    </option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <button class="btn btn-primary" onclick="appliquerFiltres()">Appliquer</button>
-        </div>
-        <div class="filter-group">
-            <button class="btn" onclick="exporterPDF()" style="background:#f5f5f5;">📄 Exporter PDF</button>
+        <div class="btn-group">
+            <button class="btn-excel" onclick="location.href='?<?=http_build_query(array_merge($_GET,['export'=>'excel']))?>'"><i class="fas fa-file-excel"></i> Excel</button>
+            <button class="btn-pdf" onclick="location.href='?<?=http_build_query(array_merge($_GET,['export'=>'pdf']))?>'"><i class="fas fa-file-pdf"></i> PDF</button>
         </div>
     </div>
-    
+    <!-- Filtres période -->
+    <div class="card" id="filtersCard">
+        <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres de période</div>
+        <div class="filters-row">
+            <div class="filter-item"><label>Année</label><select id="exerciceSelect"><?php for($y=2020;$y<=date('Y')+1;$y++): ?><option value="<?=$y?>" <?=$y==$exercice?'selected':''?>><?=$y?></option><?php endfor; ?></select></div>
+            <div class="filter-item"><label>Type de période</label><select id="typePeriodeSelect"><option value="mensuel" <?=$type_periode=='mensuel'?'selected':''?>>Mensuel</option><option value="trimestre" <?=$type_periode=='trimestre'?'selected':''?>>Trimestre</option><option value="semestre" <?=$type_periode=='semestre'?'selected':''?>>Semestre</option><option value="annuel" <?=$type_periode=='annuel'?'selected':''?>>Annuel</option></select></div>
+            <div class="filter-item" id="dynamicSelectContainer"><?php if($type_periode=='mensuel'): ?><label>Mois</label><select id="moisSelect"><?php for($m=1;$m<=12;$m++): ?><option value="<?=$m?>" <?=$m==$mois?'selected':''?>><?=str_pad($m,2,'0',STR_PAD_LEFT)?> - <?=date('F',mktime(0,0,0,$m,1))?></option><?php endfor; ?></select><?php elseif($type_periode=='trimestre'): ?><label>Trimestre</label><select id="trimestreSelect"><?php for($t=1;$t<=4;$t++): ?><option value="<?=$t?>" <?=$t==$trimestre?'selected':''?>><?=$t?><?=$t==1?'er':'ème'?> Trimestre</option><?php endfor; ?></select><?php elseif($type_periode=='semestre'): ?><label>Semestre</label><select id="semestreSelect"><?php for($s=1;$s<=2;$s++): ?><option value="<?=$s?>" <?=$s==$semestre?'selected':''?>><?=$s?><?=$s==1?'er':'e'?> semestre</option><?php endfor; ?></select><?php else: ?><label>Période</label><input type="text" disabled value="Année complète"><?php endif; ?></div>
+            <button class="btn-apply" onclick="appliquerFiltres()">Appliquer</button>
+        </div>
+    </div>
+    <!-- Carte ratio web -->
     <div class="ratio-card">
-        <div class="ratio-title">📊 Ratio R01 - Limitation des risques</div>
-        <div class="ratio-value-container">
-            <div class="ratio-value">
-                <div class="value <?= ($ratioR01 >= $normeMin && $ratioR01 <= $normeMax) ? 'conforme' : 'non-conforme' ?>">
-                    <?= number_format($pourcentageRisques, 2) ?>%
-                </div>
-                <div class="label">Risques / Ressources</div>
-            </div>
-            <div class="norme">
-                <div class="title">Norme réglementaire</div>
-                <div class="range">0% ≤ Ratio ≤ 200%</div>
-                <div class="label">Conformité requise</div>
-            </div>
-            <div>
-                <span class="status-badge <?= $conformite == 'CONFORME' ? 'status-conforme' : 'status-non-conforme' ?>">
-                    <?= $conformite ?>
-                </span>
-            </div>
+        <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:20px;">
+            <div><div class="card-header" style="padding:0;">Ratio R01 – Limitation des risques</div><div class="ratio-value <?=$conformite=='CONFORME'?'conforme':'non-conforme'?>"><?=number_format($pourcentageRisques,2)?>%</div><div>Risques nets / Ressources</div></div>
+            <div class="norme-box"><div><strong>Norme BCEAO</strong></div><div style="font-size:1.5rem;">0% → 200%</div><div>Seuil max 200%</div></div>
+            <div><span class="badge" style="background:<?=$conformite=='CONFORME'?'#10b981':'#ef4444'?>;"><?=$conformite?></span></div>
         </div>
-        <div class="progress-bar" style="margin-top: 20px;">
-            <div class="progress-fill <?= ($ratioR01 >= $normeMin && $ratioR01 <= $normeMax) ? '' : 'non-conforme' ?>" 
-                 style="width: <?= min($pourcentageRisques, 100) ?>%;">
-                <?= number_format($pourcentageRisques, 1) ?>%
-            </div>
-        </div>
+        <div class="progress-bar"><div class="progress-fill <?=$conformite!='CONFORME'?'non-conforme':''?>" style="width:<?=min($pourcentageRisques,200)/2?>%;"><?=number_format($pourcentageRisques,1)?>%</div></div>
+        <div style="margin-top:16px;"><i class="fas fa-calculator"></i> R01 = <?=number_format($montantA,0,',',' ')?> / <?=number_format($montantB,0,',',' ')?> = <?=number_format($pourcentageRisques,2)?>%</div>
     </div>
-    
+    <!-- Deux colonnes web -->
     <div class="two-columns">
-        <div class="data-table">
-            <h3>📈 A - RISQUES PORTÉS PAR L'INSTITUTION</h3>
-            <table>
-                <thead>
-                    <tr><th>Code</th><th>Libellé</th><th class="text-right">Montant (FCFA)</th></tr>
-                </thead>
-                <tbody>
-                    <?php foreach($detailsRisques as $item): ?>
-                    <tr>
-                        <td><?= $item['code'] ?></td>
-                        <td><?= $item['libelle'] ?></td>
-                        <td class="text-right"><?= number_format($item['montant'], 0, ',', ' ') ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                    <tr style="background:#f0f7ff; font-weight:bold;">
-                        <td colspan="2">TOTAL BRUT</td>
-                        <td class="text-right"><?= number_format($totalA_brut, 0, ',', ' ') ?></td>
-                    </tr>
-                    <?php foreach($detailsDeductions as $item): ?>
-                    <tr style="background:#ffebee;">
-                        <td><?= $item['code'] ?></td>
-                        <td>- <?= $item['libelle'] ?></td>
-                        <td class="text-right">- <?= number_format($item['montant'], 0, ',', ' ') ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                    <tr style="background:#e8f5e9; font-weight:bold;">
-                        <td colspan="2">TOTAL RISQUES NETS (A)</td>
-                        <td class="text-right"><?= number_format($montantA, 0, ',', ' ') ?></td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-        
-        <div class="data-table">
-            <h3>💰 B - RESSOURCES</h3>
-            <table>
-                <thead>
-                    <tr><th>Code</th><th>Libellé</th><th class="text-right">Montant (FCFA)</th></tr>
-                </thead>
-                <tbody>
-                    <?php foreach($detailsRessources as $item): ?>
-                    <tr>
-                        <td><?= $item['code'] ?></td>
-                        <td><?= $item['libelle'] ?></td>
-                        <td class="text-right"><?= number_format($item['montant'], 0, ',', ' ') ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                    <tr style="background:#e8f5e9; font-weight:bold;">
-                        <td colspan="2">TOTAL RESSOURCES (B)</td>
-                        <td class="text-right"><?= number_format($montantB, 0, ',', ' ') ?></td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
+        <div class="card"><div class="card-header"><i class="fas fa-exclamation-triangle"></i> A – RISQUES NETS</div><div class="table-wrapper"><table><thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead><tbody><?php foreach($lignesRisques as $r): ?><tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr><?php endforeach; ?><tr class="total-row"><td colspan="2">TOTAL RISQUES NETS (A)</td><td class="text-right"><?=number_format($montantA,0,',',' ')?></td></tr></tbody></table></div></div>
+        <div class="card"><div class="card-header"><i class="fas fa-coins"></i> B – RESSOURCES</div><div class="table-wrapper"><table><thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead><tbody><?php foreach($lignesRessources as $rs): ?><tr><td><?=$rs['code']?></td><td><?=$rs['lib']?></td><td class="text-right"><?=number_format($rs['montant'],0,',',' ')?></td></tr><?php endforeach; ?><tr class="total-row"><td colspan="2">TOTAL RESSOURCES (B)</td><td class="text-right"><?=number_format($montantB,0,',',' ')?></td></tr></tbody><tr></div></div>
     </div>
-    
-    <div class="data-table">
-        <h3>📊 Synthèse du calcul du ratio R01</h3>
-        <table>
-            <tbody>
-                <tr>
-                    <td style="width: 60%;"><strong>A - Risques portés par l'institution (nets)</strong></td>
-                    <td class="text-right"><strong><?= number_format($montantA, 0, ',', ' ') ?> FCFA</strong></td>
-                </tr>
-                <tr>
-                    <td><strong>B - Ressources</strong></td>
-                    <td class="text-right"><strong><?= number_format($montantB, 0, ',', ' ') ?> FCFA</strong></td>
-                </tr>
-                <tr style="background:#f0f7ff;">
-                    <td><strong>RATIO R01 = A / B</strong></td>
-                    <td class="text-right"><strong><?= number_format($pourcentageRisques, 2) ?>%</strong></td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
-    
-    <div class="data-table">
-        <h3>📖 Interprétation du ratio R01</h3>
-        <div style="padding: 15px; line-height: 1.6;">
-            <p><strong>Ratio calculé :</strong> <?= number_format($pourcentageRisques, 2) ?>%</p>
-            <p><strong>Formule :</strong> R01 = (Risques portés par l'institution) / (Ressources)</p>
-            <p><strong>Norme BCEAO :</strong> Le ratio doit être compris entre <strong>0% et 200%</strong>.</p>
-            <p><strong>Interprétation :</strong></p>
-            <ul style="margin-left: 25px; margin-top: 10px;">
-                <?php if($ratioR01 >= $normeMin && $ratioR01 <= $normeMax): ?>
-                    <li style="color:#2e7d32;">✓ Le ratio est <strong>CONFORME</strong> à la réglementation BCEAO.</li>
-                    <li>Les risques portés représentent <?= number_format($pourcentageRisques, 2) ?>% des ressources, soit dans la limite autorisée de 200%.</li>
-                    <li>L'institution maîtrise bien son exposition globale.</li>
-                <?php else: ?>
-                    <li style="color:#c62828;">✗ Le ratio est <strong>NON CONFORME</strong> à la réglementation BCEAO.</li>
-                    <li>Les risques portés dépassent les ressources de l'institution.</li>
-                    <li>Il est recommandé de :</li>
-                    <ul style="margin-left: 25px;">
-                        <li>Réduire l'exposition aux risques (prêts, engagements)</li>
-                        <li>Augmenter les ressources (fonds propres, dépôts)</li>
-                        <li>Renforcer les provisions pour créances douteuses</li>
-                    </ul>
-                <?php endif; ?>
-            </ul>
-        </div>
-    </div>
-    
-    <div class="footer">
-        Document généré le <?= date('d/m/Y à H:i:s') ?> - Données extraites de la base Mandigo<br>
-        Période : <?= $periode ?> (arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>)
-    </div>
+    <div class="card"><div class="card-header">Interprétation</div><div class="info-box"><i class="fas fa-gavel"></i><div><?=($conformite=='CONFORME')?'✓ Conforme – Les risques nets représentent '.number_format($pourcentageRisques,2).'% des ressources, ≤200%.':'⚠️ Non conforme – Les risques nets dépassent 200% des ressources.'?></div></div></div>
+    <div class="page-footer"><i class="fas fa-calendar-alt"></i> Généré le <?=date('d/m/Y à H:i:s')?> – Période <?=$exercice?> (<?=ucfirst($type_periode)?>) arrêtée au <?=date('d/m/Y',strtotime($date_fin_periode))?></div>
 </div>
-
 <script>
+    function updateDynamicSelect() {
+        const type = document.getElementById('typePeriodeSelect').value;
+        const container = document.getElementById('dynamicSelectContainer');
+        const currentMois = <?=$mois?>;
+        const currentTrimestre = <?=$trimestre?>;
+        const currentSemestre = <?=json_encode($semestre)?>;
+        let html = '';
+        if (type === 'mensuel') {
+            html = '<label>Mois</label><select id="moisSelect">';
+            for (let m = 1; m <= 12; m++) { html += `<option value="${m}" ${m===currentMois?'selected':''}>${String(m).padStart(2,'0')} - ${new Date(2000,m-1,1).toLocaleString('fr',{month:'long'})}</option>`; }
+            html += '</select>';
+        } else if (type === 'trimestre') {
+            html = '<label>Trimestre</label><select id="trimestreSelect">';
+            for (let t = 1; t <= 4; t++) { html += `<option value="${t}" ${t===currentTrimestre?'selected':''}>${t}${t===1?'er':'ème'} Trimestre</option>`; }
+            html += '</select>';
+        } else if (type === 'semestre') {
+            html = '<label>Semestre</label><select id="semestreSelect">';
+            for (let s = 1; s <= 2; s++) { html += `<option value="${s}" ${s===currentSemestre?'selected':''}>${s}${s===1?'er':'e'} semestre</option>`; }
+            html += '</select>';
+        } else {
+            html = '<label>Période</label><input type="text" disabled value="Année complète">';
+        }
+        container.innerHTML = html;
+    }
     function appliquerFiltres() {
-        let exercice = document.getElementById('exercice').value;
-        let mois = document.getElementById('mois').value;
-        window.location.href = 'R01.php?exercice=' + exercice + '&mois=' + mois;
+        let url = 'R01.php?exercice=' + document.getElementById('exerciceSelect').value + '&type_periode=' + document.getElementById('typePeriodeSelect').value;
+        let type = document.getElementById('typePeriodeSelect').value;
+        if (type === 'mensuel') url += '&mois=' + document.getElementById('moisSelect').value;
+        else if (type === 'trimestre') url += '&trimestre=' + document.getElementById('trimestreSelect').value;
+        else if (type === 'semestre') url += '&semestre=' + document.getElementById('semestreSelect').value;
+        window.location.href = url;
     }
-    
-    function exporterPDF() {
-        window.print();
-    }
+    document.addEventListener('DOMContentLoaded', function() { updateDynamicSelect(); document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect); });
 </script>
 </body>
 </html>

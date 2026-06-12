@@ -1,116 +1,213 @@
 <?php
-// DIMF_2009.php - Détail du compte 6221 (Personnel extérieur à l'institution)
-// Déclaration SICS-BCEAO
-
+// DIMF_2009.php - Détail du compte 6221 (Personnel extérieur) avec FPDF
 session_start();
 
-// Configuration BDD
+require_once '../../fpdf/fpdf.php';
+
+class PDF_DIMF extends FPDF {
+    public $codeDimf = 'DIMF';
+    public $titreDimf = 'Etat financier';
+    public $nomSfd = 'SFD';
+    public $periode = '';
+    public $exercice = '';
+
+    // Utilisation de mb_convert_encoding (robuste pour les caractères accentués)
+    static function u($str) {
+        return mb_convert_encoding($str, 'ISO-8859-1', 'UTF-8');
+    }
+
+    function Header() {
+        $this->SetFillColor(156,163,175);
+        $this->Rect(0,0,$this->GetPageWidth(),28,'F');
+        $this->SetFont('Arial','',7);
+        $this->SetTextColor(255,255,255);
+        $this->SetXY(8,3);
+        $this->Cell(0,4,self::u('Republique de Cote d\'Ivoire  •  Ministere de l\'Economie et des Finances  -  DGTCP / DSFD'),0,1,'L');
+        $this->SetFont('Arial','B',13);
+        $this->SetX(8);
+        $this->Cell(0,7,self::u($this->codeDimf.'  -  '.$this->titreDimf),0,1,'L');
+        $this->SetFont('Arial','',8);
+        $this->SetX(8);
+        $this->Cell(0,5,self::u('SFD : '.$this->nomSfd.'   |   Periode : '.$this->periode.'   |   Exercice : '.$this->exercice.'   |   Arrete au : '.date('d/m/Y')),0,1,'L');
+        $this->SetTextColor(0,0,0);
+        $this->Ln(4);
+    }
+
+    function Footer() {
+        $this->SetY(-12);
+        $this->SetFont('Arial','I',7);
+        $this->SetTextColor(100,116,139);
+        $this->Cell(0,4,self::u('SICS-BCEAO  •  Genere le '.date('d/m/Y a H:i:s').'  •  Page '.$this->PageNo().'/{nb}'),0,0,'C');
+    }
+
+    function SectionTitle($label) {
+        $this->SetFont('Arial','B',9);
+        $this->SetFillColor(0,0,0);
+        $this->SetTextColor(255,255,255);
+        $this->Cell(0,7,self::u('  '.strtoupper($label)),0,1,'L',true);
+        $this->SetTextColor(0,0,0);
+        $this->Ln(1);
+    }
+
+    function TableHeader($cols) {
+        $this->SetFont('Arial','B',8);
+        $this->SetFillColor(248,250,252);
+        $this->SetTextColor(30,41,59);
+        $this->SetDrawColor(226,232,240);
+        foreach ($cols as $col) {
+            $align = isset($col['align'])?$col['align']:'L';
+            $this->Cell($col['w'],6,self::u($col['label']),1,0,$align,true);
+        }
+        $this->Ln();
+    }
+
+    function TableRow($cols, $data, $style='') {
+        $fill = false;
+        if ($style=='subtotal') {
+            $this->SetFillColor(248,250,252);
+            $this->SetFont('Arial','B',8);
+            $fill = true;
+        } elseif ($style=='total') {
+            $this->SetFillColor(240,253,244);
+            $this->SetFont('Arial','B',8.5);
+            $fill = true;
+        } else {
+            $this->SetFillColor(255,255,255);
+            $this->SetFont('Arial','',7.5);
+        }
+        $this->SetTextColor(15,23,42);
+        $this->SetDrawColor(226,232,240);
+        foreach ($cols as $i=>$col) {
+            $val = isset($data[$i])?$data[$i]:'';
+            $align = isset($col['align'])?$col['align']:'L';
+            $this->Cell($col['w'],5.5,self::u($val),1,0,$align,$fill);
+        }
+        $this->Ln();
+    }
+
+    static function montant($val) {
+        return number_format((float)$val,0,',',' ').' F';
+    }
+}
+
+// ============================================================
+// CONNEXION BDD
+// ============================================================
 $host = 'localhost';
-$dbname = 'mandigo';
+$dbname = 'microfinances_dg';
 $username = 'root';
 $password = '';
-
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
+} catch(PDOException $e) {
     die("Erreur de connexion : " . $e->getMessage());
 }
 
-// Récupération des paramètres
+// ============================================================
+// PARAMÈTRES DE PÉRIODE
+// ============================================================
 $exercice = isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y');
-$trimestre = isset($_GET['trimestre']) ? (int)$_GET['trimestre'] : 4;
+$type_periode = isset($_GET['type_periode']) ? $_GET['type_periode'] : 'mensuel';
 $mois = isset($_GET['mois']) ? (int)$_GET['mois'] : 12;
-$date_fin_periode = $exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01';
-$date_fin_periode = date('Y-m-t', strtotime($date_fin_periode));
-$date_debut_exercice = $exercice . '-01-01';
+$trimestre = isset($_GET['trimestre']) ? (int)$_GET['trimestre'] : 4;
+$semestre = isset($_GET['semestre']) ? (int)$_GET['semestre'] : null;
 
-// Traitement du formulaire d'ajout
+switch ($type_periode) {
+    case 'trimestre': $mois = $trimestre * 3; break;
+    case 'semestre':  $mois = ($semestre == 1) ? 6 : 12; break;
+    case 'annuel':    $mois = 12; break;
+}
+$date_fin_periode = date('Y-m-t', strtotime($exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01'));
+
+// ============================================================
+// TRAITEMENT DU FORMULAIRE (AJOUT / MODIFICATION / SUPPRESSION)
+// ============================================================
 $message = '';
 $message_type = '';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] == 'save') {
     try {
         // Création de la table si elle n'existe pas
-        $pdo->exec("
-            CREATE TABLE IF NOT EXISTS personnel_exterieur (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                exercice INT NOT NULL,
-                categorie VARCHAR(100) NOT NULL,
-                nationaux INT DEFAULT 0,
-                autre_umoa INT DEFAULT 0,
-                hors_umoa INT DEFAULT 0,
-                secteur_primaire INT DEFAULT 0,
-                secteur_secondaire INT DEFAULT 0,
-                secteur_tertiaire INT DEFAULT 0,
-                total_effectif INT DEFAULT 0,
-                facturation DECIMAL(15,2) DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                UNIQUE KEY uk_exercice_categorie (exercice, categorie)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        ");
-        
-        if ($_POST['action'] == 'save') {
-            // Supprimer les anciennes données pour l'exercice
-            $stmt = $pdo->prepare("DELETE FROM personnel_exterieur WHERE exercice = :exercice");
-            $stmt->execute([':exercice' => $exercice]);
-            
-            // Insérer les nouvelles données
-            $stmt = $pdo->prepare("
-                INSERT INTO personnel_exterieur (
-                    exercice, categorie, nationaux, autre_umoa, hors_umoa,
-                    secteur_primaire, secteur_secondaire, secteur_tertiaire,
-                    total_effectif, facturation
-                ) VALUES (
-                    :exercice, :categorie, :nationaux, :autre_umoa, :hors_umoa,
-                    :secteur_primaire, :secteur_secondaire, :secteur_tertiaire,
-                    :total_effectif, :facturation
-                )
-            ");
-            
-            $categories = [
-                'ZB1' => ['libelle' => 'Cadres Supérieurs'],
-                'ZB2' => ['libelle' => 'Techniciens Supérieurs et cadres moyens'],
-                'ZB3' => ['libelle' => 'Techniciens Agents de Maîtrise et ouvriers qualifiés'],
-                'ZB4' => ['libelle' => 'Employés, manœuvres, ouvriers et apprentis']
-            ];
-            
-            foreach ($categories as $code => $cat) {
-                $nationaux = (int)($_POST[$code . '_nationaux'] ?? 0);
-                $autre_umoa = (int)($_POST[$code . '_autre_umoa'] ?? 0);
-                $hors_umoa = (int)($_POST[$code . '_hors_umoa'] ?? 0);
-                $secteur_primaire = (int)($_POST[$code . '_secteur_primaire'] ?? 0);
-                $secteur_secondaire = (int)($_POST[$code . '_secteur_secondaire'] ?? 0);
-                $secteur_tertiaire = (int)($_POST[$code . '_secteur_tertiaire'] ?? 0);
-                $total_effectif = $nationaux + $autre_umoa + $hors_umoa;
-                $facturation = (float)($_POST[$code . '_facturation'] ?? 0);
-                
-                $stmt->execute([
-                    ':exercice' => $exercice,
-                    ':categorie' => $code,
-                    ':nationaux' => $nationaux,
-                    ':autre_umoa' => $autre_umoa,
-                    ':hors_umoa' => $hors_umoa,
-                    ':secteur_primaire' => $secteur_primaire,
-                    ':secteur_secondaire' => $secteur_secondaire,
-                    ':secteur_tertiaire' => $secteur_tertiaire,
-                    ':total_effectif' => $total_effectif,
-                    ':facturation' => $facturation
-                ]);
-            }
-            
-            $message = "Données enregistrées avec succès !";
-            $message_type = "success";
+        $pdo->exec("CREATE TABLE IF NOT EXISTS personnel_exterieur (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            exercice INT NOT NULL,
+            categorie VARCHAR(100) NOT NULL,
+            nationaux INT DEFAULT 0,
+            autre_umoa INT DEFAULT 0,
+            hors_umoa INT DEFAULT 0,
+            secteur_primaire INT DEFAULT 0,
+            secteur_secondaire INT DEFAULT 0,
+            secteur_tertiaire INT DEFAULT 0,
+            total_effectif INT DEFAULT 0,
+            facturation DECIMAL(15,2) DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_exercice_categorie (exercice, categorie)
+        )");
+
+        // Supprimer les anciennes données
+        $stmtDel = $pdo->prepare("DELETE FROM personnel_exterieur WHERE exercice = :exercice");
+        $stmtDel->execute([':exercice' => $exercice]);
+
+        // Insérer les nouvelles données
+        $stmtIns = $pdo->prepare("INSERT INTO personnel_exterieur (exercice, categorie, nationaux, autre_umoa, hors_umoa, secteur_primaire, secteur_secondaire, secteur_tertiaire, total_effectif, facturation) VALUES (:exercice, :categorie, :nationaux, :autre_umoa, :hors_umoa, :secteur_primaire, :secteur_secondaire, :secteur_tertiaire, :total_effectif, :facturation)");
+
+        $categories = [
+            'ZB1' => 'Cadres Supérieurs',
+            'ZB2' => 'Techniciens Supérieurs et cadres moyens',
+            'ZB3' => 'Techniciens Agents de Maîtrise et ouvriers qualifiés',
+            'ZB4' => 'Employés, manœuvres, ouvriers et apprentis'
+        ];
+
+        foreach ($categories as $code => $lib) {
+            $nationaux       = (int)($_POST[$code . '_nationaux'] ?? 0);
+            $autre_umoa      = (int)($_POST[$code . '_autre_umoa'] ?? 0);
+            $hors_umoa       = (int)($_POST[$code . '_hors_umoa'] ?? 0);
+            $secteur_primaire  = (int)($_POST[$code . '_secteur_primaire'] ?? 0);
+            $secteur_secondaire = (int)($_POST[$code . '_secteur_secondaire'] ?? 0);
+            $secteur_tertiaire = (int)($_POST[$code . '_secteur_tertiaire'] ?? 0);
+            $total_effectif  = $nationaux + $autre_umoa + $hors_umoa;
+            $facturation     = (float)($_POST[$code . '_facturation'] ?? 0);
+
+            $stmtIns->execute([
+                ':exercice' => $exercice,
+                ':categorie' => $code,
+                ':nationaux' => $nationaux,
+                ':autre_umoa' => $autre_umoa,
+                ':hors_umoa' => $hors_umoa,
+                ':secteur_primaire' => $secteur_primaire,
+                ':secteur_secondaire' => $secteur_secondaire,
+                ':secteur_tertiaire' => $secteur_tertiaire,
+                ':total_effectif' => $total_effectif,
+                ':facturation' => $facturation
+            ]);
         }
+
+        $message = "Données enregistrées avec succès !";
+        $message_type = "success";
     } catch (PDOException $e) {
         $message = "Erreur : " . $e->getMessage();
         $message_type = "error";
     }
+
+    // Redirection POST → GET
+    $url = "DIMF_2009.php?exercice=$exercice&type_periode=$type_periode" .
+           ($type_periode=='mensuel' ? "&mois=$mois" : ($type_periode=='trimestre' ? "&trimestre=$trimestre" : ($type_periode=='semestre' ? "&semestre=$semestre" : ""))) .
+           "&msg=" . urlencode($message) . "&msg_type=$message_type";
+    header("Location: $url");
+    exit;
 }
 
-// Récupération des données existantes
+if (isset($_GET['msg'])) {
+    $message = $_GET['msg'];
+    $message_type = $_GET['msg_type'] ?? 'success';
+}
+
+// ============================================================
+// RÉCUPÉRATION DES DONNÉES EXISTANTES
+// ============================================================
 $personnel_data = [];
 $categories = [
     'ZB1' => 'Cadres Supérieurs',
@@ -120,18 +217,13 @@ $categories = [
 ];
 
 try {
-    $stmt = $pdo->prepare("
-        SELECT * FROM personnel_exterieur 
-        WHERE exercice = :exercice
-    ");
+    $stmt = $pdo->prepare("SELECT * FROM personnel_exterieur WHERE exercice = :exercice");
     $stmt->execute([':exercice' => $exercice]);
-    $results = $stmt->fetchAll();
-    
-    foreach ($results as $row) {
+    foreach ($stmt->fetchAll() as $row) {
         $personnel_data[$row['categorie']] = $row;
     }
 } catch (PDOException $e) {
-    $personnel_data = [];
+    // Table inexistante, on continue
 }
 
 // Calcul des totaux
@@ -146,18 +238,97 @@ $totaux = [
     'facturation' => 0
 ];
 
-foreach ($categories as $code => $libelle) {
+foreach ($categories as $code => $lib) {
     $data = $personnel_data[$code] ?? null;
     if ($data) {
-        $totaux['nationaux'] += $data['nationaux'];
-        $totaux['autre_umoa'] += $data['autre_umoa'];
-        $totaux['hors_umoa'] += $data['hors_umoa'];
-        $totaux['secteur_primaire'] += $data['secteur_primaire'];
-        $totaux['secteur_secondaire'] += $data['secteur_secondaire'];
-        $totaux['secteur_tertiaire'] += $data['secteur_tertiaire'];
-        $totaux['total_effectif'] += $data['total_effectif'];
-        $totaux['facturation'] += $data['facturation'];
+        $totaux['nationaux'] += (int)$data['nationaux'];
+        $totaux['autre_umoa'] += (int)$data['autre_umoa'];
+        $totaux['hors_umoa'] += (int)$data['hors_umoa'];
+        $totaux['secteur_primaire'] += (int)$data['secteur_primaire'];
+        $totaux['secteur_secondaire'] += (int)$data['secteur_secondaire'];
+        $totaux['secteur_tertiaire'] += (int)$data['secteur_tertiaire'];
+        $totaux['total_effectif'] += (int)$data['total_effectif'];
+        $totaux['facturation'] += (float)$data['facturation'];
     }
+}
+
+// ============================================================
+// GÉNÉRATION DU PDF (si format=pdf)
+// ============================================================
+$format = isset($_GET['format']) ? $_GET['format'] : 'html';
+
+if ($format === 'pdf') {
+    switch ($type_periode) {
+        case 'mensuel':   $lib_periode = 'Mois ' . str_pad($mois,2,'0',STR_PAD_LEFT) . '/' . $exercice; break;
+        case 'trimestre': $lib_periode = $trimestre . 'e Trim. ' . $exercice; break;
+        case 'semestre':  $lib_periode = $semestre . 'er Sem. ' . $exercice; break;
+        default:          $lib_periode = 'Annee ' . $exercice;
+    }
+
+    $pdf = new PDF_DIMF('L', 'mm', 'A4');
+    $pdf->AliasNbPages();
+    $pdf->codeDimf  = 'DIMF_2009';
+    $pdf->titreDimf = 'Personnel extérieur (compte 6221)';
+    $pdf->nomSfd    = $_SESSION['nom_sfd'] ?? 'SFD';
+    $pdf->periode   = $lib_periode;
+    $pdf->exercice  = $exercice;
+    $pdf->SetMargins(8, 35, 8);
+    $pdf->SetAutoPageBreak(true, 14);
+    $pdf->AddPage();
+
+    $cols = [
+        ['label' => 'Catégorie',        'w' => 55],
+        ['label' => 'Nationaux',        'w' => 20, 'align' => 'R'],
+        ['label' => 'Autres UMOA',      'w' => 25, 'align' => 'R'],
+        ['label' => 'Hors UMOA',        'w' => 25, 'align' => 'R'],
+        ['label' => 'Primaire',         'w' => 20, 'align' => 'R'],
+        ['label' => 'Secondaire',       'w' => 22, 'align' => 'R'],
+        ['label' => 'Tertiaire',        'w' => 22, 'align' => 'R'],
+        ['label' => 'Total effectif',   'w' => 30, 'align' => 'R'],
+        ['label' => 'Facturation (FCFA)','w' => 40, 'align' => 'R']
+    ];
+
+    $pdf->SectionTitle('Personnel extérieur');
+    $pdf->TableHeader($cols);
+
+    foreach ($categories as $code => $lib) {
+        $d = $personnel_data[$code] ?? [
+            'nationaux' => 0,
+            'autre_umoa' => 0,
+            'hors_umoa' => 0,
+            'secteur_primaire' => 0,
+            'secteur_secondaire' => 0,
+            'secteur_tertiaire' => 0,
+            'total_effectif' => 0,
+            'facturation' => 0
+        ];
+        $pdf->TableRow($cols, [
+            PDF_DIMF::u($lib),
+            $d['nationaux'],
+            $d['autre_umoa'],
+            $d['hors_umoa'],
+            $d['secteur_primaire'],
+            $d['secteur_secondaire'],
+            $d['secteur_tertiaire'],
+            $d['total_effectif'],
+            PDF_DIMF::montant($d['facturation'])
+        ]);
+    }
+
+    $pdf->TableRow($cols, [
+        'TOTAL',
+        $totaux['nationaux'],
+        $totaux['autre_umoa'],
+        $totaux['hors_umoa'],
+        $totaux['secteur_primaire'],
+        $totaux['secteur_secondaire'],
+        $totaux['secteur_tertiaire'],
+        $totaux['total_effectif'],
+        PDF_DIMF::montant($totaux['facturation'])
+    ], 'total');
+
+    $pdf->Output('I', 'DIMF_2009_Personnel_' . $exercice . '_' . $type_periode . '.pdf');
+    exit;
 }
 ?>
 <!DOCTYPE html>
@@ -165,386 +336,277 @@ foreach ($categories as $code => $libelle) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DIMF_2009 - Détail du compte 6221 (Personnel extérieur)</title>
+    <title>DIMF_2009 - Personnel extérieur (compte 6221)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f0f2f5;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #1a3a5c, #0d2137);
-            color: white;
-            padding: 25px 30px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        
-        .header h1 {
-            font-size: 1.8rem;
-            margin-bottom: 8px;
-        }
-        
-        .header .subtitle {
-            opacity: 0.9;
-            font-size: 0.95rem;
-        }
-        
-        .badge {
-            display: inline-block;
-            background: #ffc107;
-            color: #1a3a5c;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: bold;
-            margin-top: 10px;
-        }
-        
-        .filters {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            display: flex;
-            gap: 15px;
-            align-items: flex-end;
-            flex-wrap: wrap;
-        }
-        
-        .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .filter-group label {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: #555;
-        }
-        
-        .filter-group select, .filter-group input {
-            padding: 8px 15px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 0.9rem;
-        }
-        
-        .btn {
-            padding: 8px 20px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s;
-        }
-        
-        .btn-primary {
-            background: #1a3a5c;
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background: #0d2137;
-        }
-        
-        .btn-success {
-            background: #2e7d32;
-            color: white;
-        }
-        
-        .btn-success:hover {
-            background: #1b5e20;
-        }
-        
-        .section-card {
-            background: white;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
-        
-        .section-title {
-            padding: 15px 20px;
-            background: #f8f9fa;
-            border-bottom: 2px solid #1a3a5c;
-            font-size: 1.1rem;
-            font-weight: bold;
-            color: #1a3a5c;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        
-        th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
-            font-size: 0.85rem;
-            text-align: center;
-        }
-        
-        td {
-            text-align: center;
-        }
-        
-        .text-right {
-            text-align: right;
-        }
-        
-        .text-left {
-            text-align: left;
-        }
-        
-        .total-row {
-            background: #e8f5e9;
-            font-weight: bold;
-        }
-        
-        .footer {
-            text-align: center;
-            padding: 20px;
-            color: #777;
-            font-size: 0.8rem;
-        }
-        
-        .info-box {
-            background: #e3f2fd;
-            border-left: 4px solid #2196f3;
-            padding: 15px;
-            margin: 15px;
-            border-radius: 8px;
-            font-size: 0.9rem;
-        }
-        
-        .alert {
-            padding: 15px;
-            border-radius: 8px;
-            margin: 0 15px 15px 15px;
-        }
-        
-        .alert-success {
-            background: #e8f5e9;
-            color: #2e7d32;
-            border-left: 4px solid #2e7d32;
-        }
-        
-        .alert-error {
-            background: #ffebee;
-            color: #c62828;
-            border-left: 4px solid #c62828;
-        }
-        
-        input[type="number"] {
-            width: 100%;
-            padding: 8px;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            text-align: right;
-        }
-        
-        .form-actions {
-            padding: 20px;
-            text-align: center;
-            border-top: 1px solid #eee;
-        }
-        
-        @media (max-width: 768px) {
-            .filters {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            table {
-                font-size: 0.7rem;
-            }
-            
-            th, td {
-                padding: 6px 4px;
-            }
-            
-            input[type="number"] {
-                min-width: 60px;
-            }
-        }
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{font-family:'Inter',sans-serif;background:#f1f5f9;padding:24px;}
+        .dashboard{max-width:1400px;margin:0 auto;}
+        .page-header{background:linear-gradient(135deg,#3b82f6,#60a5fa);border-radius:24px;padding:20px 28px;margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;}
+        .header-left h1{font-size:1.6rem;font-weight:600;color:white;margin-bottom:6px;display:flex;align-items:center;gap:10px;}
+        .subtitle{font-size:0.8rem;color:#e0f2fe;}
+        .badge{background:#2563eb;color:white;padding:4px 12px;border-radius:30px;font-size:0.7rem;}
+        .btn-group{display:flex;gap:12px;}
+        .btn-excel,.btn-pdf{display:inline-flex;align-items:center;gap:8px;padding:8px 20px;border-radius:40px;font-weight:500;font-size:0.85rem;border:none;cursor:pointer;text-decoration:none;}
+        .btn-excel{background:#10b981;color:white;}
+        .btn-pdf{background:#ef4444;color:white;}
+        .card{background:white;border-radius:20px;padding:20px 24px;margin-bottom:24px;box-shadow:0 1px 3px rgba(0,0,0,0.05);}
+        .card-header{display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #eef2f6;font-weight:600;color:#1e40af;}
+        .filters-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:20px;}
+        .filter-item{display:flex;flex-direction:column;gap:6px;}
+        .filter-item label{font-size:0.7rem;font-weight:600;text-transform:uppercase;color:#4b5563;}
+        .filter-item select,.filter-item input{border:1px solid #d1d5db;border-radius:12px;padding:8px 14px;font-size:0.85rem;}
+        .btn-apply{background:#3b82f6;color:white;border:none;border-radius:40px;padding:8px 24px;cursor:pointer;}
+        .table-wrapper{overflow-x:auto;}
+        table{width:100%;border-collapse:collapse;font-size:0.85rem;}
+        th{text-align:left;padding:12px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;}
+        td{padding:10px 16px;border-bottom:1px solid #f1f5f9;}
+        .text-right{text-align:right;}
+        .total-row{background:#f0fdf4;font-weight:700;}
+        .info-box{background:#eef2ff;border-left:4px solid #3b82f6;padding:16px 20px;border-radius:16px;display:flex;align-items:center;gap:14px;}
+        input[type="number"]{width:100px;text-align:right;}
+        .page-footer{text-align:center;font-size:0.75rem;color:#6b7280;margin-top:16px;}
+        @media print{.btn-group,.page-footer,#filtersCard{display:none;}}
     </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1>DIMF_2009 - DÉTAIL DU COMPTE 6221</h1>
-        <div class="subtitle">
-            République de Côte d'Ivoire / Ministère de l'Economie et des Finances<br>
-            Direction Générale du Trésor et de la Comptabilité Publique (DGTCP)<br>
-            Direction des Systèmes Financiers Décentralisés (DSFD)
+<div class="dashboard">
+    <div class="page-header">
+        <div class="header-left">
+            <h1><i class="fas fa-users"></i> DIMF_2009 - PERSONNEL EXTÉRIEUR (COMPTE 6221)</h1>
+            <div class="subtitle">République de Côte d'Ivoire – DGTCP / DSFD</div>
+            <div class="badge">SICS-BCEAO</div>
         </div>
-        <div class="badge">SICS-BCEAO - Personnel extérieur à l'institution</div>
-    </div>
-    
-    <div class="filters">
-        <div class="filter-group">
-            <label>Exercice</label>
-            <select name="exercice" id="exercice">
-                <?php for($y = 2020; $y <= date('Y')+1; $y++): ?>
-                    <option value="<?= $y ?>" <?= $y == $exercice ? 'selected' : '' ?>><?= $y ?></option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Trimestre</label>
-            <select name="trimestre" id="trimestre">
-                <option value="1" <?= $trimestre == 1 ? 'selected' : '' ?>>1er Trimestre</option>
-                <option value="2" <?= $trimestre == 2 ? 'selected' : '' ?>>2ème Trimestre</option>
-                <option value="3" <?= $trimestre == 3 ? 'selected' : '' ?>>3ème Trimestre</option>
-                <option value="4" <?= $trimestre == 4 ? 'selected' : '' ?>>4ème Trimestre</option>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Mois</label>
-            <select name="mois" id="mois">
-                <?php for($m = 1; $m <= 12; $m++): ?>
-                    <option value="<?= $m ?>" <?= $m == $mois ? 'selected' : '' ?>>
-                        <?= str_pad($m, 2, '0', STR_PAD_LEFT) ?> - <?= date('F', mktime(0,0,0,$m,1)) ?>
-                    </option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <button class="btn btn-primary" onclick="appliquerFiltres()">Appliquer</button>
-        </div>
-        <div class="filter-group">
-            <button class="btn" onclick="exporterPDF()" style="background:#f5f5f5;">📄 Exporter PDF</button>
+        <div class="btn-group">
+            <button class="btn-excel" onclick="exporterExcel()"><i class="fas fa-file-excel"></i> Excel</button>
+            <?php
+            $pdf_params = http_build_query([
+                'exercice' => $exercice,
+                'type_periode' => $type_periode,
+                'mois' => $mois,
+                'trimestre' => $trimestre,
+                'semestre' => $semestre,
+                'format' => 'pdf'
+            ]);
+            ?>
+            <a class="btn-pdf" href="?<?= $pdf_params ?>" target="_blank"><i class="fas fa-file-pdf"></i> PDF</a>
         </div>
     </div>
-    
+
+    <div class="card" id="filtersCard">
+        <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres</div>
+        <div class="filters-row">
+            <div class="filter-item">
+                <label>Année</label>
+                <select id="exerciceSelect">
+                    <?php for($y=2020;$y<=date('Y')+1;$y++): ?>
+                        <option value="<?= $y ?>" <?= $y==$exercice?'selected':'' ?>><?= $y ?></option>
+                    <?php endfor; ?>
+                </select>
+            </div>
+            <div class="filter-item">
+                <label>Type période</label>
+                <select id="typePeriodeSelect">
+                    <option value="mensuel" <?= $type_periode=='mensuel'?'selected':'' ?>>Mensuel</option>
+                    <option value="trimestre" <?= $type_periode=='trimestre'?'selected':'' ?>>Trimestre</option>
+                    <option value="semestre" <?= $type_periode=='semestre'?'selected':'' ?>>Semestre</option>
+                    <option value="annuel" <?= $type_periode=='annuel'?'selected':'' ?>>Annuel</option>
+                </select>
+            </div>
+            <div class="filter-item" id="dynamicSelectContainer">
+                <?php
+                if ($type_periode == 'mensuel') {
+                    echo '<label>Mois</label><select id="moisSelect">';
+                    for ($m=1;$m<=12;$m++) {
+                        $selected = ($m == $mois) ? 'selected' : '';
+                        echo "<option value='$m' $selected>" . str_pad($m,2,'0') . " - " . date('F', mktime(0,0,0,$m,1)) . "</option>";
+                    }
+                    echo '</select>';
+                } elseif ($type_periode == 'trimestre') {
+                    echo '<label>Trimestre</label><select id="trimestreSelect">';
+                    for ($t=1;$t<=4;$t++) {
+                        $selected = ($t == $trimestre) ? 'selected' : '';
+                        echo "<option value='$t' $selected>$t" . ($t==1?'er':'ème') . " Trimestre</option>";
+                    }
+                    echo '</select>';
+                } elseif ($type_periode == 'semestre') {
+                    echo '<label>Semestre</label><select id="semestreSelect">';
+                    for ($s=1;$s<=2;$s++) {
+                        $selected = ($s == $semestre) ? 'selected' : '';
+                        echo "<option value='$s' $selected>$s" . ($s==1?'er':'e') . " semestre</option>";
+                    }
+                    echo '</select>';
+                } else {
+                    echo '<label>Période</label><input type="text" disabled value="Année complète" style="background:#f3f4f6;">';
+                }
+                ?>
+            </div>
+            <button class="btn-apply" onclick="appliquerFiltres()"><i class="fas fa-filter"></i> Appliquer</button>
+        </div>
+        <div style="font-size:0.7rem;color:#6b7280;margin-top:12px;"><i class="fas fa-info-circle"></i> Choisissez le type de période pour affiner la date d'arrêté.</div>
+    </div>
+
     <?php if($message): ?>
-        <div class="alert alert-<?= $message_type ?>">
+        <div class="info-box" style="background:<?= $message_type=='success'?'#d1fae5':'#fee2e2' ?>;border-left-color:<?= $message_type=='success'?'#10b981':'#ef4444' ?>;">
             <?= htmlspecialchars($message) ?>
         </div>
     <?php endif; ?>
-    
-    <div class="info-box">
-        <strong>ⓘ Note :</strong> Ce tableau détaille le personnel extérieur à l'institution (prestataires, consultants, intérimaires, etc.)
-        inscrit au compte 6221. Sont concernés les effectifs et les montants facturés à l'institution.
-    </div>
-    
-    <form method="post" action="">
-        <input type="hidden" name="action" value="save">
-        
-        <div class="section-card">
-            <div class="section-title">📊 PERSONNEL EXTÉRIEUR - EFFECTIFS ET FACTURATION</div>
-            <div style="overflow-x: auto;">
+
+    <div class="card">
+        <div class="card-header"><i class="fas fa-chart-bar"></i> SAISIE DES EFFECTIFS ET FACTURATION</div>
+        <form method="post">
+            <input type="hidden" name="action" value="save">
+            <div class="table-wrapper">
                 <table>
                     <thead>
                         <tr>
-                            <th rowspan="2">Libellés</th>
-                            <th colspan="3">EFFECTIF (en unités)</th>
-                            <th colspan="3">Par secteur d'activité</th>
-                            <th rowspan="2" class="text-right">TOTAL</th>
-                            <th rowspan="2" class="text-right">FACTURATION À L'INSTITUTION (FCFA)</th>
-                         </tr>
-                        <tr>
-                            <th>NATIONAUX</th>
-                            <th>Autres États UMOA</th>
+                            <th>Catégorie</th>
+                            <th>Nationaux</th>
+                            <th>Autres UMOA</th>
                             <th>Hors UMOA</th>
-                            <th>Primaire</th>
-                            <th>Secondaire</th>
-                            <th>Tertiaire</th>
-                         </tr>
+                            <th>Secteur primaire</th>
+                            <th>Secteur secondaire</th>
+                            <th>Secteur tertiaire</th>
+                            <th class="text-right">Total effectif</th>
+                            <th class="text-right">Facturation (FCFA)</th>
+                        </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($categories as $code => $libelle): ?>
-                            <?php 
-                            $data = $personnel_data[$code] ?? [
-                                'nationaux' => 0, 'autre_umoa' => 0, 'hors_umoa' => 0,
-                                'secteur_primaire' => 0, 'secteur_secondaire' => 0, 'secteur_tertiaire' => 0,
-                                'total_effectif' => 0, 'facturation' => 0
+                        <?php foreach($categories as $code => $lib): 
+                            $d = $personnel_data[$code] ?? [
+                                'nationaux' => 0,
+                                'autre_umoa' => 0,
+                                'hors_umoa' => 0,
+                                'secteur_primaire' => 0,
+                                'secteur_secondaire' => 0,
+                                'secteur_tertiaire' => 0,
+                                'total_effectif' => 0,
+                                'facturation' => 0
                             ];
-                            ?>
-                            <tr>
-                                <td class="text-left"><?= htmlspecialchars($libelle) ?></td>
-                                <td><input type="number" name="<?= $code ?>_nationaux" value="<?= $data['nationaux'] ?>"></td>
-                                <td><input type="number" name="<?= $code ?>_autre_umoa" value="<?= $data['autre_umoa'] ?>"></td>
-                                <td><input type="number" name="<?= $code ?>_hors_umoa" value="<?= $data['hors_umoa'] ?>"></td>
-                                <td><input type="number" name="<?= $code ?>_secteur_primaire" value="<?= $data['secteur_primaire'] ?>"></td>
-                                <td><input type="number" name="<?= $code ?>_secteur_secondaire" value="<?= $data['secteur_secondaire'] ?>"></td>
-                                <td><input type="number" name="<?= $code ?>_secteur_tertiaire" value="<?= $data['secteur_tertiaire'] ?>"></td>
-                                <td class="text-right"><strong><?= $data['total_effectif'] ?></strong></td>
-                                <td><input type="number" name="<?= $code ?>_facturation" value="<?= number_format($data['facturation'], 0, '', '') ?>" step="1"></td>
-                            </tr>
+                        ?>
+                        <tr>
+                            <td class="text-left"><?= htmlspecialchars($lib) ?></td>
+                            <td><input type="number" name="<?= $code ?>_nationaux" value="<?= $d['nationaux'] ?>"></td>
+                            <td><input type="number" name="<?= $code ?>_autre_umoa" value="<?= $d['autre_umoa'] ?>"></td>
+                            <td><input type="number" name="<?= $code ?>_hors_umoa" value="<?= $d['hors_umoa'] ?>"></td>
+                            <td><input type="number" name="<?= $code ?>_secteur_primaire" value="<?= $d['secteur_primaire'] ?>"></td>
+                            <td><input type="number" name="<?= $code ?>_secteur_secondaire" value="<?= $d['secteur_secondaire'] ?>"></td>
+                            <td><input type="number" name="<?= $code ?>_secteur_tertiaire" value="<?= $d['secteur_tertiaire'] ?>"></td>
+                            <td class="text-right"><?= number_format($d['total_effectif'],0,',',' ') ?></td>
+                            <td><input type="number" name="<?= $code ?>_facturation" value="<?= number_format($d['facturation'],0,'','') ?>"></td>
+                        </tr>
                         <?php endforeach; ?>
                         <tr class="total-row">
-                            <td class="text-left"><strong>TOTAL</strong></td>
-                            <td><strong><?= $totaux['nationaux'] ?></strong></td>
-                            <td><strong><?= $totaux['autre_umoa'] ?></strong></td>
-                            <td><strong><?= $totaux['hors_umoa'] ?></strong></td>
-                            <td><strong><?= $totaux['secteur_primaire'] ?></strong></td>
-                            <td><strong><?= $totaux['secteur_secondaire'] ?></strong></td>
-                            <td><strong><?= $totaux['secteur_tertiaire'] ?></strong></td>
-                            <td class="text-right"><strong><?= $totaux['total_effectif'] ?></strong></td>
-                            <td class="text-right"><strong><?= number_format($totaux['facturation'], 0, ',', ' ') ?></strong></td>
+                            <td><strong>TOTAL</strong></td>
+                            <td class="text-right"><strong><?= number_format($totaux['nationaux'],0,',',' ') ?></strong></td>
+                            <td class="text-right"><strong><?= number_format($totaux['autre_umoa'],0,',',' ') ?></strong></td>
+                            <td class="text-right"><strong><?= number_format($totaux['hors_umoa'],0,',',' ') ?></strong></td>
+                            <td class="text-right"><strong><?= number_format($totaux['secteur_primaire'],0,',',' ') ?></strong></td>
+                            <td class="text-right"><strong><?= number_format($totaux['secteur_secondaire'],0,',',' ') ?></strong></td>
+                            <td class="text-right"><strong><?= number_format($totaux['secteur_tertiaire'],0,',',' ') ?></strong></td>
+                            <td class="text-right"><strong><?= number_format($totaux['total_effectif'],0,',',' ') ?></strong></td>
+                            <td class="text-right"><strong><?= number_format($totaux['facturation'],0,',',' ') ?></strong></td>
                         </tr>
                     </tbody>
                 </table>
             </div>
-            <div class="form-actions">
-                <button type="submit" class="btn btn-success">💾 Enregistrer les données</button>
+            <div class="filters-row" style="justify-content:flex-end; margin-top:16px;">
+                <button type="submit" class="btn-apply"><i class="fas fa-save"></i> Enregistrer</button>
             </div>
-        </div>
-    </form>
-    
-    <!-- Synthèse des effectifs par origine -->
-    <div class="section-card">
-        <div class="section-title">📈 SYNTHÈSE DES EFFECTIFS PAR ORIGINE</div>
+        </form>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><i class="fas fa-chart-pie"></i> SYNTHÈSE</div>
         <div class="info-box">
-            <strong>Effectifs nationaux :</strong> <?= $totaux['nationaux'] ?> personnes<br>
-            <strong>Effectifs autres pays UMOA :</strong> <?= $totaux['autre_umoa'] ?> personnes<br>
-            <strong>Effectifs hors UMOA :</strong> <?= $totaux['hors_umoa'] ?> personnes<br>
-            <strong>Effectif total :</strong> <?= $totaux['total_effectif'] ?> personnes<br>
-            <strong>Facturation totale :</strong> <?= number_format($totaux['facturation'], 0, ',', ' ') ?> FCFA
+            <strong>Effectifs :</strong> Nationaux <?= number_format($totaux['nationaux'],0,',',' ') ?> | Autres UMOA <?= number_format($totaux['autre_umoa'],0,',',' ') ?> | Hors UMOA <?= number_format($totaux['hors_umoa'],0,',',' ') ?> | Total <?= number_format($totaux['total_effectif'],0,',',' ') ?><br>
+            <strong>Facturation totale :</strong> <?= number_format($totaux['facturation'],0,',',' ') ?> FCFA
         </div>
     </div>
-    
-    <div class="footer">
-        Document généré le <?= date('d/m/Y à H:i:s') ?> - Données extraites de la base Mandigo<br>
-        Période : <?= $exercice ?> - <?= $trimestre ?>ème trimestre (arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>)
+
+    <div class="page-footer">
+        <i class="fas fa-calendar-alt"></i> Document généré le <?= date('d/m/Y à H:i:s') ?> – Période : <?= $exercice ?> (<?= ucfirst($type_periode) ?>) arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>
     </div>
 </div>
 
 <script>
-    function appliquerFiltres() {
-        let exercice = document.getElementById('exercice').value;
-        let trimestre = document.getElementById('trimestre').value;
-        let mois = document.getElementById('mois').value;
-        window.location.href = 'DIMF_2009.php?exercice=' + exercice + '&trimestre=' + trimestre + '&mois=' + mois;
+    function updateDynamicSelect() {
+        const type = document.getElementById('typePeriodeSelect').value;
+        const container = document.getElementById('dynamicSelectContainer');
+        const currentMois = <?= $mois ?>;
+        const currentTrimestre = <?= $trimestre ?>;
+        const currentSemestre = <?= json_encode($semestre) ?>;
+        let html = '';
+        if (type === 'mensuel') {
+            html = '<label>Mois</label><select id="moisSelect">';
+            for (let m=1; m<=12; m++) {
+                const selected = (m === currentMois) ? 'selected' : '';
+                const monthName = new Date(2000, m-1, 1).toLocaleString('fr', {month:'long'});
+                html += `<option value="${m}" ${selected}>${String(m).padStart(2,'0')} - ${monthName}</option>`;
+            }
+            html += '</select>';
+        } else if (type === 'trimestre') {
+            html = '<label>Trimestre</label><select id="trimestreSelect">';
+            for (let t=1; t<=4; t++) {
+                const selected = (t === currentTrimestre) ? 'selected' : '';
+                html += `<option value="${t}" ${selected}>${t}${t===1?'er':'ème'} Trimestre</option>`;
+            }
+            html += '</select>';
+        } else if (type === 'semestre') {
+            html = '<label>Semestre</label><select id="semestreSelect">';
+            for (let s=1; s<=2; s++) {
+                const selected = (s === currentSemestre) ? 'selected' : '';
+                html += `<option value="${s}" ${selected}>${s}${s===1?'er':'e'} semestre</option>`;
+            }
+            html += '</select>';
+        } else {
+            html = '<label>Période</label><input type="text" disabled value="Année complète" style="background:#f3f4f6;">';
+        }
+        container.innerHTML = html;
     }
-    
-    function exporterPDF() {
-        window.print();
+
+    function appliquerFiltres() {
+        const exercice = document.getElementById('exerciceSelect').value;
+        const type = document.getElementById('typePeriodeSelect').value;
+        let url = 'DIMF_2009.php?exercice=' + exercice + '&type_periode=' + type;
+        if (type === 'mensuel')   url += '&mois=' + document.getElementById('moisSelect').value;
+        if (type === 'trimestre') url += '&trimestre=' + document.getElementById('trimestreSelect').value;
+        if (type === 'semestre')  url += '&semestre=' + document.getElementById('semestreSelect').value;
+        window.location.href = url;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        updateDynamicSelect();
+        document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect);
+    });
+
+    function exporterExcel() {
+        const wb = XLSX.utils.book_new();
+        const data = [
+            ['DIMF_2009 - PERSONNEL EXTÉRIEUR'],
+            ['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],
+            [],
+            ['Catégorie','Nationaux','Autres UMOA','Hors UMOA','Primaire','Secondaire','Tertiaire','Total effectif','Facturation']
+        ];
+        <?php foreach($categories as $code => $lib): 
+            $d = $personnel_data[$code] ?? [
+                'nationaux' => 0,
+                'autre_umoa' => 0,
+                'hors_umoa' => 0,
+                'secteur_primaire' => 0,
+                'secteur_secondaire' => 0,
+                'secteur_tertiaire' => 0,
+                'total_effectif' => 0,
+                'facturation' => 0
+            ];
+        ?>
+        data.push(['<?= addslashes($lib) ?>', <?= $d['nationaux'] ?>, <?= $d['autre_umoa'] ?>, <?= $d['hors_umoa'] ?>, <?= $d['secteur_primaire'] ?>, <?= $d['secteur_secondaire'] ?>, <?= $d['secteur_tertiaire'] ?>, <?= $d['total_effectif'] ?>, <?= $d['facturation'] ?>]);
+        <?php endforeach; ?>
+        data.push(['TOTAL', <?= $totaux['nationaux'] ?>, <?= $totaux['autre_umoa'] ?>, <?= $totaux['hors_umoa'] ?>, <?= $totaux['secteur_primaire'] ?>, <?= $totaux['secteur_secondaire'] ?>, <?= $totaux['secteur_tertiaire'] ?>, <?= $totaux['total_effectif'] ?>, <?= $totaux['facturation'] ?>]);
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        XLSX.utils.book_append_sheet(wb, ws, "PERSONNEL_EXTERIEUR");
+        XLSX.writeFile(wb, 'DIMF_2009_<?= $exercice ?>_<?= $type_periode ?>.xlsx');
     }
 </script>
 </body>

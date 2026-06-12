@@ -1,12 +1,14 @@
 <?php
 // R07.php - Constitution de la réserve générale
-// Norme BCEAO: ≥ 15% (doit être supérieur ou égal à 15% du résultat bénéficiaire)
+// Norme BCEAO: ≥ 15% du bénéfice distribuable
 
 session_start();
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
 
-// Configuration BDD
+// ------------------------- CONNEXION BDD -------------------------
 $host = 'localhost';
-$dbname = 'mandigo';
+$dbname = 'microfinances_dg';
 $username = 'root';
 $password = '';
 
@@ -18,752 +20,519 @@ try {
     die("Erreur de connexion : " . $e->getMessage());
 }
 
-// Récupérer l'année et le mois
+// ------------------------- PARAMÈTRES -------------------------
 $exercice = isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y');
-$mois = isset($_GET['mois']) ? (int)$_GET['mois'] : date('m');
-$periode = $exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT);
-$date_fin_periode = $exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01';
-$date_fin_periode = date('Y-m-t', strtotime($date_fin_periode));
-$date_debut_exercice = $exercice . '-01-01';
-$date_fin_exercice = $exercice . '-12-31';
+$type_periode = isset($_GET['type_periode']) ? $_GET['type_periode'] : 'annuel';
+$mois = isset($_GET['mois']) ? (int)$_GET['mois'] : 12;
+$trimestre = isset($_GET['trimestre']) ? (int)$_GET['trimestre'] : 4;
+$semestre = isset($_GET['semestre']) ? (int)$_GET['semestre'] : 2;
 
-// ============================================================
-// A - BASE DE CALCUL (Résultat de l'exercice)
-// ============================================================
+switch ($type_periode) {
+    case 'mensuel': break;
+    case 'trimestre': $mois = $trimestre * 3; break;
+    case 'semestre': $mois = ($semestre == 1) ? 6 : 12; break;
+    case 'annuel': $mois = 12; break;
+    default: $mois = 12;
+}
+$date_fin_periode = date('Y-m-t', strtotime("$exercice-" . str_pad($mois, 2, '0', STR_PAD_LEFT) . "-01"));
+$date_debut_exercice = "$exercice-01-01";
+$date_fin_exercice = "$exercice-12-31";
 
-// L80 - Résultat excédentaire de l'exercice (bénéfice)
+// ------------------------- CALCUL DE LA BASE -------------------------
 $resultatExercice = 0;
-$resultatDeficit = 0;
-
 try {
-    // Calcul du résultat à partir des comptes de produits et charges
-    $stmtResultat = $pdo->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
-            COALESCE(SUM(CASE WHEN pc.classe_compte = '7' THEN e.montant_credit - e.montant_debit ELSE 0 END), 0) as total_produits,
-            COALESCE(SUM(CASE WHEN pc.classe_compte = '6' THEN e.montant_debit - e.montant_credit ELSE 0 END), 0) as total_charges
+            COALESCE(SUM(CASE WHEN pc.classe_compte = '7' THEN e.montant_credit - e.montant_debit ELSE 0 END), 0) as produits,
+            COALESCE(SUM(CASE WHEN pc.classe_compte = '6' THEN e.montant_debit - e.montant_credit ELSE 0 END), 0) as charges
         FROM ecritures_comptables e
         INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
         WHERE pc.classe_compte IN ('6', '7')
           AND e.date_ecriture BETWEEN :date_debut AND :date_fin
     ");
-    $stmtResultat->execute([
-        ':date_debut' => $date_debut_exercice,
-        ':date_fin' => $date_fin_exercice
-    ]);
-    $resultResultat = $stmtResultat->fetch();
-    
-    $resultatBrut = $resultResultat['total_produits'] - $resultResultat['total_charges'];
-    
+    $stmt->execute([':date_debut' => $date_debut_exercice, ':date_fin' => $date_fin_exercice]);
+    $res = $stmt->fetch();
+    $resultatBrut = $res['produits'] - $res['charges'];
     if ($resultatBrut > 0) {
-        $resultatExercice = $resultatBrut;
-        $resultatDeficit = 0;
-    } else {
-        $resultatExercice = 0;
-        $resultatDeficit = abs($resultatBrut);
+        $resultatExercice = (float)$resultatBrut;
     }
-} catch (PDOException $e) {
-    $resultatExercice = 0;
-    $resultatDeficit = 0;
-}
+} catch (PDOException $e) { $resultatExercice = 0; }
 
-// L70 - Report à nouveau (positif ou négatif)
-$reportNouveauPositif = 0;
-$reportNouveauNegatif = 0;
-
+$reportNegatif = 0;
 try {
-    $stmtReport = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as solde_report
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(CASE WHEN (e.montant_credit - e.montant_debit) < 0 THEN ABS(e.montant_credit - e.montant_debit) ELSE 0 END), 0) as solde
         FROM ecritures_comptables e
         INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '11%'  -- Comptes de report à nouveau
-          AND e.date_ecriture <= :date_fin
+        WHERE pc.numero_compte LIKE '11%' AND e.date_ecriture <= :date_fin
     ");
-    $stmtReport->execute([':date_fin' => $date_fin_periode]);
-    $resultReport = $stmtReport->fetch();
-    
-    $soldeReport = $resultReport['solde_report'];
-    if ($soldeReport > 0) {
-        $reportNouveauPositif = $soldeReport;
-        $reportNouveauNegatif = 0;
-    } else {
-        $reportNouveauPositif = 0;
-        $reportNouveauNegatif = abs($soldeReport);
-    }
-} catch (PDOException $e) {
-    $reportNouveauPositif = 0;
-    $reportNouveauNegatif = 0;
-}
+    $stmt->execute([':date_fin' => $date_fin_periode]);
+    $reportNegatif = (float)$stmt->fetch()['solde'];
+} catch (PDOException $e) { $reportNegatif = 0; }
 
-// Base = Résultat bénéficiaire (L80) - Report à nouveau déficitaire (L70 négatif)
-$baseCalcul = $resultatExercice - $reportNouveauNegatif;
-if ($baseCalcul < 0) {
-    $baseCalcul = 0;
-}
+$base = $resultatExercice - $reportNegatif;
+if ($base < 0) $base = 0;
+$montantMinimal = $base * 0.15;
 
-// Montant minimal de réserve à constituer (15% de la base)
-$montantReserveMinimal = $baseCalcul * 0.15;
-
-// ============================================================
-// B - DOTATION ANNUELLE DE LA RÉSERVE GÉNÉRALE
-// ============================================================
-
-// Récupération de la dotation effectuée (mouvement créditeur du compte 106)
-$dotationReserve = 0;
+// ------------------------- DOTATION -------------------------
+$dotation = 0;
 $detailsDotation = [];
-
 try {
-    $stmtDotation = $pdo->prepare("
-        SELECT 
-            e.date_ecriture,
-            e.numero_piece,
-            e.libelle_ecriture,
-            e.montant_credit as montant
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '106%'  -- Compte de réserves (106)
-          AND e.montant_credit > 0
-          AND e.date_ecriture BETWEEN :date_debut AND :date_fin
-        ORDER BY e.date_ecriture DESC
-    ");
-    $stmtDotation->execute([
-        ':date_debut' => $date_debut_exercice,
-        ':date_fin' => $date_fin_exercice
-    ]);
-    $detailsDotation = $stmtDotation->fetchAll();
-    
-    // Somme des dotations
-    $stmtTotalDotation = $pdo->prepare("
+    $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(e.montant_credit), 0) as total_dotation
         FROM ecritures_comptables e
         INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '106%'
-          AND e.montant_credit > 0
+        WHERE pc.numero_compte LIKE '106%' AND e.montant_credit > 0
           AND e.date_ecriture BETWEEN :date_debut AND :date_fin
     ");
-    $stmtTotalDotation->execute([
-        ':date_debut' => $date_debut_exercice,
-        ':date_fin' => $date_fin_exercice
-    ]);
-    $resultDotation = $stmtTotalDotation->fetch();
-    $dotationReserve = $resultDotation['total_dotation'];
-} catch (PDOException $e) {
-    $dotationReserve = 0;
-    $detailsDotation = [];
-}
+    $stmt->execute([':date_debut' => $date_debut_exercice, ':date_fin' => $date_fin_exercice]);
+    $dotation = (float)$stmt->fetch()['total_dotation'];
 
-// Si pas de données dans ecritures_comptables, on vérifie dans la table capital
-if ($dotationReserve == 0) {
+    $stmt = $pdo->prepare("
+        SELECT e.date_ecriture, e.numero_piece, e.libelle_ecriture, e.montant_credit as montant
+        FROM ecritures_comptables e
+        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
+        WHERE pc.numero_compte LIKE '106%' AND e.montant_credit > 0
+          AND e.date_ecriture BETWEEN :date_debut AND :date_fin
+        ORDER BY e.date_ecriture DESC
+    ");
+    $stmt->execute([':date_debut' => $date_debut_exercice, ':date_fin' => $date_fin_exercice]);
+    $detailsDotation = $stmt->fetchAll();
+} catch (PDOException $e) { $dotation = 0; }
+
+if ($dotation == 0) {
     try {
-        $stmtCapital = $pdo->prepare("
+        $stmt = $pdo->prepare("
             SELECT COALESCE(SUM(montant), 0) as total_reserve
             FROM capital
-            WHERE statut = 'valide'
-              AND libelle LIKE '%réserve%'
-              AND YEAR(date_creation) = :exercice
+            WHERE statut = 'valide' AND libelle LIKE '%réserve%' AND YEAR(date_creation) = :exercice
         ");
-        $stmtCapital->execute([':exercice' => $exercice]);
-        $resultCapital = $stmtCapital->fetch();
-        $dotationReserve = $resultCapital['total_reserve'];
-    } catch (PDOException $e) {
-        $dotationReserve = 0;
-    }
+        $stmt->execute([':exercice' => $exercice]);
+        $dotation = (float)$stmt->fetch()['total_reserve'];
+    } catch (PDOException $e) { $dotation = 0; }
 }
 
-// Solde actuel de la réserve générale (cumul)
-$soldeReserveGeneral = 0;
+$soldeReserve = 0;
 try {
-    $stmtSolde = $pdo->prepare("
+    $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as solde_reserve
         FROM ecritures_comptables e
         INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '106%'
-          AND e.date_ecriture <= :date_fin
+        WHERE pc.numero_compte LIKE '106%' AND e.date_ecriture <= :date_fin
     ");
-    $stmtSolde->execute([':date_fin' => $date_fin_periode]);
-    $resultSolde = $stmtSolde->fetch();
-    $soldeReserveGeneral = $resultSolde['solde_reserve'];
-} catch (PDOException $e) {
-    $soldeReserveGeneral = 0;
-}
+    $stmt->execute([':date_fin' => $date_fin_periode]);
+    $soldeReserve = (float)$stmt->fetch()['solde_reserve'];
+} catch (PDOException $e) { $soldeReserve = 0; }
 
-// ============================================================
-// CALCUL DU RATIO R07
-// ============================================================
-
-if ($baseCalcul <= 0) {
+// ------------------------- RATIO -------------------------
+if ($base <= 0) {
     $ratioR07 = 0;
-    $statutBase = "ND"; // Non Déterminé (pas de bénéfice)
+    $pourcentage = 0;
+    $conformite = 'N/A - Pas de bénéfice distribuable';
 } else {
-    $ratioR07 = $dotationReserve / $baseCalcul;
+    $ratioR07 = $dotation / $base;
+    $pourcentage = $ratioR07 * 100;
+    $conformite = ($ratioR07 >= 0.15) ? 'CONFORME' : 'NON_CONFORME';
 }
 
-// Norme : ≥ 15%
-$normeMin = 0.15;
-$normeMax = null;
+$lignesBase = [
+    ['code'=>'L80','lib'=>'Résultat excédentaire de l\'exercice (bénéfice)','montant'=>$resultatExercice],
+    ['code'=>'L70','lib'=>'Report à nouveau déficitaire','montant'=>$reportNegatif],
+];
+$lignesDotation = [
+    ['code'=>'106','lib'=>'Dotation annuelle de la réserve générale','montant'=>$dotation],
+];
 
-if ($baseCalcul <= 0) {
-    $conformite = 'N/A - Pas de bénéfice';
-} else {
-    $conformite = ($ratioR07 >= $normeMin) ? 'CONFORME' : 'NON_CONFORME';
+// ------------------------- EXPORT PDF -------------------------
+if (isset($_GET['export']) && $_GET['export'] === 'pdf') {
+    require_once('../../fpdf/fpdf.php');
+
+    class PDF_DIMF extends FPDF {
+        public $codeDimf  = 'R07';
+        public $titreDimf = 'CONSTITUTION DE LA RESERVE GENERALE';
+        public $nomSfd    = 'SFD';
+        public $periode   = '';
+        public $exercice  = '';
+
+        static function u($str) {
+            return iconv('UTF-8', 'ISO-8859-1//TRANSLIT', $str);
+        }
+
+        function Header() {
+            $this->SetFillColor(156, 163, 175);
+            $this->Rect(0, 0, $this->GetPageWidth(), 28, 'F');
+            $this->SetFont('Arial', '', 7);
+            $this->SetTextColor(255, 255, 255);
+            $this->SetXY(8, 3);
+            $this->Cell(0, 4, self::u('République de Côte d\'Ivoire  •  Ministère de l\'Economie et des Finances  -  DGTCP / DSFD'), 0, 1, 'L');
+            $this->SetFont('Arial', 'B', 13);
+            $this->SetTextColor(255, 255, 255);
+            $this->SetX(8);
+            $this->Cell(0, 7, self::u($this->codeDimf . '  -  ' . $this->titreDimf), 0, 1, 'L');
+            $this->SetFont('Arial', '', 8);
+            $this->SetTextColor(255, 255, 255);
+            $this->SetX(8);
+            $this->Cell(0, 5, self::u(
+                'SFD : ' . $this->nomSfd .
+                '   |   Période : ' . $this->periode .
+                '   |   Exercice : ' . $this->exercice .
+                '   |   Arrêté au : ' . date('d/m/Y', strtotime($GLOBALS['date_fin_periode']))
+            ), 0, 1, 'L');
+            $this->SetTextColor(0, 0, 0);
+            $this->Ln(4);
+        }
+
+        function Footer() {
+            $this->SetY(-12);
+            $this->SetFont('Arial', 'I', 7);
+            $this->SetTextColor(100, 116, 139);
+            $this->Cell(0, 4, self::u(
+                'SICS-BCEAO  •  Généré le ' . date('d/m/Y H:i:s') .
+                '  •  Page ' . $this->PageNo() . '/{nb}'),
+                0, 0, 'C');
+        }
+
+        function SectionTitle($label) {
+            $this->SetFont('Arial', 'B', 9);
+            $this->SetFillColor(0, 0, 0);
+            $this->SetTextColor(255, 255, 255);
+            $this->Cell(0, 7, self::u('  ' . strtoupper($label)), 0, 1, 'L', true);
+            $this->SetTextColor(0, 0, 0);
+            $this->Ln(1);
+        }
+
+        function TableHeader($cols) {
+            $this->SetFont('Arial', 'B', 8);
+            $this->SetFillColor(248, 250, 252);
+            $this->SetTextColor(30, 41, 59);
+            $this->SetDrawColor(226, 232, 240);
+            $this->SetLineWidth(0.2);
+            foreach ($cols as $col) {
+                $align = isset($col['align']) ? $col['align'] : 'L';
+                $this->Cell($col['w'], 6, self::u($col['label']), 1, 0, $align, true);
+            }
+            $this->Ln();
+        }
+
+        function TableRow($cols, $data, $style = '') {
+            switch ($style) {
+                case 'subtotal':
+                    $this->SetFillColor(248, 250, 252);
+                    $this->SetFont('Arial', 'B', 8);
+                    $fill = true; break;
+                case 'total':
+                    $this->SetFillColor(240, 253, 244);
+                    $this->SetFont('Arial', 'B', 8.5);
+                    $fill = true; break;
+                default:
+                    $this->SetFillColor(255, 255, 255);
+                    $this->SetFont('Arial', '', 7.5);
+                    $fill = false; break;
+            }
+            $this->SetTextColor(15, 23, 42);
+            $this->SetDrawColor(226, 232, 240);
+            $this->SetLineWidth(0.1);
+            foreach ($cols as $i => $col) {
+                $val   = isset($data[$i]) ? $data[$i] : '';
+                $align = isset($col['align']) ? $col['align'] : 'L';
+                $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
+            }
+            $this->Ln();
+        }
+
+        static function montant($val) {
+            return number_format((float)$val, 0, ',', ' ') . ' F';
+        }
+    }
+
+    $pdf = new PDF_DIMF();
+    $pdf->AliasNbPages();
+    $pdf->codeDimf  = 'R07';
+    $pdf->titreDimf = 'CONSTITUTION DE LA RESERVE GENERALE';
+    $pdf->nomSfd    = 'SFD';
+    $pdf->periode   = ucfirst($type_periode);
+    $pdf->exercice  = $exercice;
+    $pdf->AddPage();
+
+    $cols = [
+        ['w' => 30, 'label' => 'Code', 'align' => 'L'],
+        ['w' => 100, 'label' => 'Libellé', 'align' => 'L'],
+        ['w' => 50, 'label' => 'Montant (FCFA)', 'align' => 'R']
+    ];
+
+    // Section A
+    $pdf->SectionTitle("A - BASE DE CALCUL (RESULTAT DE L'EXERCICE)");
+    $pdf->TableHeader($cols);
+    foreach ($lignesBase as $row) {
+        $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
+    }
+    $pdf->TableRow($cols, ['', 'BASE = Bénéfice - Report déficitaire', PDF_DIMF::montant($base)], 'total');
+
+    $pdf->Ln(5);
+
+    // Section B
+    $pdf->SectionTitle("B - DOTATION ANNUELLE DE LA RESERVE GENERALE");
+    $pdf->TableHeader($cols);
+    foreach ($lignesDotation as $row) {
+        $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
+    }
+    $pdf->TableRow($cols, ['', 'TOTAL DOTATION', PDF_DIMF::montant($dotation)], 'total');
+
+    $pdf->Ln(5);
+    $pdf->SetFont('Arial', 'B', 10);
+    $pdf->Cell(0, 7, PDF_DIMF::u("RATIO R07 = Dotation / Base = " . number_format($pourcentage, 2) . "%"), 0, 1);
+    $pdf->SetFont('Arial', '', 9);
+    $pdf->MultiCell(0, 5, PDF_DIMF::u("Norme BCEAO : Dotation ≥ 15% du bénéfice distribuable\nConformité : " . $conformite));
+
+    $pdf->Output('I', 'R07_' . $exercice . '_' . $type_periode . '.pdf');
+    exit;
 }
 
-// Calcul du pourcentage atteint
-$pourcentageAtteint = ($baseCalcul > 0) ? ($dotationReserve / $baseCalcul) * 100 : 0;
+// ------------------------- EXPORT EXCEL (HTML .xls) CORRIGÉ -------------------------
+if (isset($_GET['export']) && $_GET['export'] === 'excel') {
+    header('Content-Type: application/vnd.ms-excel');
+    header('Content-Disposition: attachment; filename="R07_' . $exercice . '_' . $type_periode . '.xls"');
+    header('Cache-Control: max-age=0');
+    echo '<html><head><meta charset="UTF-8"><style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h2 { color: #1a3a5c; font-size: 16pt; }
+        h3 { color: #1a3a5c; font-size: 14pt; margin-top: 20px; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 10pt; }
+        th, td { border: 1px solid #999; padding: 8px; vertical-align: top; }
+        th { background: #f2f2f2; text-align: center; font-weight: bold; }
+        .text-right { text-align: right; }
+        .total-row { background: #e8f5e9; font-weight: bold; }
+        .col-code { width: 15%; }
+        .col-libelle { width: 70%; }
+        .col-montant { width: 15%; }
+    </style></head><body>';
+    echo '<h2>R07 - CONSTITUTION DE LA RESERVE GENERALE</h2>';
+    echo '<p><strong>Période :</strong> ' . $exercice . ' - ' . ucfirst($type_periode) . ' (arrêtée au ' . date('d/m/Y', strtotime($date_fin_periode)) . ')</p>';
 
-// Récupération du capital social pour information
-$capitalSocial = 0;
-try {
-    $stmtCapital = $pdo->prepare("
-        SELECT COALESCE(SUM(montant), 0) as capital
-        FROM capital
-        WHERE statut = 'valide'
-          AND mode_paiement IN ('BANQUE', 'CASH')
-    ");
-    $stmtCapital->execute();
-    $resultCapital = $stmtCapital->fetch();
-    $capitalSocial = $resultCapital['capital'];
-} catch (PDOException $e) {
-    $capitalSocial = 0;
+    // Tableau A
+    echo '<h3>A - BASE DE CALCUL (Résultat de l\'exercice)</h3>';
+    echo '<table>';
+    echo '<td><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant (FCFA)</th></tr>';
+    foreach ($lignesBase as $r) {
+        echo '<tr>';
+        echo '<td class="col-code">' . $r['code'] . '</td>';
+        echo '<td class="col-libelle">' . $r['lib'] . '</td>';
+        echo '<td class="col-montant text-right">' . number_format($r['montant'], 0, ',', ' ') . '</td>';
+        echo '</tr>';
+    }
+    echo '<tr class="total-row">';
+    echo '<td colspan="2">BASE = Bénéfice - Report déficitaire</td>';
+    echo '<td class="text-right">' . number_format($base, 0, ',', ' ') . '</td>';
+    echo '</tr>';
+    echo '</table>';
+
+    // Tableau B
+    echo '<h3>B - DOTATION ANNUELLE DE LA RESERVE GENERALE</h3>';
+    echo '<tr>';
+    echo '<tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant (FCFA)</th></tr>';
+    foreach ($lignesDotation as $r) {
+        echo '<tr>';
+        echo '<td class="col-code">' . $r['code'] . '</td>';
+        echo '<td class="col-libelle">' . $r['lib'] . '</td>';
+        echo '<td class="col-montant text-right">' . number_format($r['montant'], 0, ',', ' ') . '</td>';
+        echo '</tr>';
+    }
+    echo '<tr class="total-row">';
+    echo '<td colspan="2">TOTAL DOTATION</td>';
+    echo '<td class="text-right">' . number_format($dotation, 0, ',', ' ') . '</td>';
+    echo '</tr>';
+    echo '</table>';
+
+    echo '<p><strong>RATIO R07 = Dotation / Base = ' . number_format($pourcentage, 2) . '%</strong></p>';
+    echo '<p>Norme BCEAO : Dotation ≥ 15% du bénéfice distribuable<br>Conformité : ' . $conformite . '</p>';
+    echo '</body></html>';
+    exit;
 }
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>R07 - Constitution de la réserve générale</title>
+    <title>R07 - Constitution de la réserve générale (BCEAO)</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f0f2f5;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #1a3a5c, #0d2137);
-            color: white;
-            padding: 25px 30px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        
-        .header h1 {
-            font-size: 1.8rem;
-            margin-bottom: 8px;
-        }
-        
-        .header .subtitle {
-            opacity: 0.9;
-            font-size: 0.95rem;
-        }
-        
-        .badge {
-            display: inline-block;
-            background: #ffc107;
-            color: #1a3a5c;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: bold;
-            margin-top: 10px;
-        }
-        
-        .filters {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            display: flex;
-            gap: 15px;
-            align-items: flex-end;
-            flex-wrap: wrap;
-        }
-        
-        .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .filter-group label {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: #555;
-        }
-        
-        .filter-group select, .filter-group input {
-            padding: 8px 15px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 0.9rem;
-        }
-        
-        .btn {
-            padding: 8px 20px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s;
-        }
-        
-        .btn-primary {
-            background: #1a3a5c;
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background: #0d2137;
-        }
-        
-        .ratio-card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
-        
-        .ratio-title {
-            font-size: 1.1rem;
-            color: #555;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #e0e0e0;
-        }
-        
-        .ratio-value-container {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 20px;
-        }
-        
-        .ratio-value {
-            text-align: center;
-        }
-        
-        .ratio-value .value {
-            font-size: 3rem;
-            font-weight: bold;
-        }
-        
-        .ratio-value .label {
-            color: #777;
-            font-size: 0.85rem;
-        }
-        
-        .conforme {
-            color: #2e7d32;
-        }
-        
-        .non-conforme {
-            color: #c62828;
-        }
-        
-        .norme {
-            background: #f5f5f5;
-            padding: 10px 20px;
-            border-radius: 8px;
-            text-align: center;
-        }
-        
-        .norme .title {
-            font-weight: 600;
-            margin-bottom: 5px;
-        }
-        
-        .norme .range {
-            font-size: 1.3rem;
-            font-weight: bold;
-            color: #1a3a5c;
-        }
-        
-        .status-badge {
-            display: inline-block;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 0.85rem;
-        }
-        
-        .status-conforme {
-            background: #e8f5e9;
-            color: #2e7d32;
-        }
-        
-        .status-non-conforme {
-            background: #ffebee;
-            color: #c62828;
-        }
-        
-        .status-na {
-            background: #e3f2fd;
-            color: #1565c0;
-        }
-        
-        .data-table {
-            background: white;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            margin-bottom: 25px;
-        }
-        
-        .data-table h3 {
-            padding: 15px 20px;
-            background: #f8f9fa;
-            border-bottom: 1px solid #e0e0e0;
-            font-size: 1rem;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        
-        th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
-        }
-        
-        tr:hover {
-            background: #f8f9fa;
-        }
-        
-        .text-right {
-            text-align: right;
-        }
-        
-        .text-center {
-            text-align: center;
-        }
-        
-        .footer {
-            text-align: center;
-            padding: 20px;
-            color: #777;
-            font-size: 0.8rem;
-        }
-        
-        .warning {
-            background: #fff3e0;
-            border-left: 4px solid #ff9800;
-            padding: 15px;
-            margin-bottom: 20px;
-            border-radius: 8px;
-        }
-        
-        .info {
-            background: #e3f2fd;
-            border-left: 4px solid #2196f3;
-            padding: 15px;
-            margin-bottom: 20px;
-            border-radius: 8px;
-            font-size: 0.9rem;
-        }
-        
-        .progress-bar {
-            background: #e0e0e0;
-            border-radius: 10px;
-            height: 20px;
-            overflow: hidden;
-            margin: 10px 0;
-        }
-        
-        .progress-fill {
-            background: linear-gradient(90deg, #2e7d32, #4caf50);
-            height: 100%;
-            border-radius: 10px;
-            transition: width 0.5s ease;
-            text-align: center;
-            color: white;
-            font-size: 0.7rem;
-            line-height: 20px;
-        }
-        
-        .progress-fill.non-conforme {
-            background: linear-gradient(90deg, #c62828, #f44336);
-        }
-        
-        @media (max-width: 768px) {
-            .ratio-value-container {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .filters {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            table {
-                font-size: 0.8rem;
-            }
-            
-            th, td {
-                padding: 8px 10px;
-            }
-        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Inter',system-ui,sans-serif; background:#f1f5f9; padding:24px; }
+        .dashboard { max-width:1400px; margin:0 auto; }
+        .page-header { background:linear-gradient(135deg,#3b82f6,#60a5fa); border-radius:24px; padding:20px 28px; margin-bottom:24px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; }
+        .header-left h1 { font-size:1.6rem; font-weight:600; color:white; display:flex; align-items:center; gap:10px; }
+        .subtitle { font-size:0.8rem; color:#e0f2fe; }
+        .badge { background:#2563eb; color:white; padding:4px 12px; border-radius:30px; display:inline-block; margin-top:8px; }
+        .btn-group { display:flex; gap:12px; }
+        .btn-excel, .btn-pdf { padding:8px 20px; border-radius:40px; font-weight:500; border:none; cursor:pointer; }
+        .btn-excel { background:#10b981; color:white; }
+        .btn-pdf { background:#ef4444; color:white; }
+        .card { background:white; border-radius:20px; padding:20px 24px; margin-bottom:24px; box-shadow:0 1px 3px rgba(0,0,0,0.05); }
+        .card-header { display:flex; align-items:center; gap:10px; border-bottom:1px solid #eef2f6; padding-bottom:12px; margin-bottom:16px; font-weight:600; color:#1e40af; }
+        .filters-row { display:flex; flex-wrap:wrap; align-items:flex-end; gap:20px; }
+        .filter-item { display:flex; flex-direction:column; gap:6px; }
+        .filter-item label { font-size:0.7rem; font-weight:600; text-transform:uppercase; color:#4b5563; }
+        .filter-item select, .filter-item input { padding:8px 14px; border:1px solid #d1d5db; border-radius:12px; }
+        .btn-apply { background:#3b82f6; color:white; border:none; border-radius:40px; padding:8px 24px; cursor:pointer; }
+        .ratio-card { background:linear-gradient(145deg,#f8fafc,#fff); border-radius:20px; padding:24px; margin-bottom:24px; border:1px solid #e2e8f0; }
+        .ratio-value { font-size:3rem; font-weight:800; }
+        .ratio-value.conforme { color:#10b981; }
+        .ratio-value.non-conforme { color:#ef4444; }
+        .norme-box { background:#f1f5f9; border-radius:16px; padding:12px 20px; text-align:center; }
+        .progress-bar { background:#e2e8f0; border-radius:50px; height:24px; overflow:hidden; margin-top:20px; }
+        .progress-fill { background:linear-gradient(90deg,#3b82f6,#60a5fa); height:100%; border-radius:50px; text-align:center; color:white; font-size:0.75rem; line-height:24px; }
+        .progress-fill.non-conforme { background:linear-gradient(90deg,#ef4444,#f97316); }
+        .table-wrapper { overflow-x:auto; }
+        table { width:100%; border-collapse:collapse; }
+        th, td { padding:12px 16px; text-align:left; border-bottom:1px solid #f1f5f9; }
+        th { background:#f8fafc; font-weight:600; }
+        .text-right { text-align:right; }
+        .total-row { background:#f0fdf4; font-weight:700; }
+        .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px; border-radius:16px; display:flex; align-items:center; gap:14px; }
+        .two-columns { display:flex; gap:24px; flex-wrap:wrap; }
+        .two-columns .card { flex:1; min-width:320px; }
+        .page-footer { text-align:center; font-size:0.75rem; color:#6b7280; margin-top:16px; }
+        @media print { .btn-group, .filters-row, #filtersCard { display:none; } }
+        .col-code { width: 15%; }
+        .col-libelle { width: 70%; }
+        .col-montant { width: 15%; }
     </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1>R07 - Constitution de la réserve générale</h1>
-        <div class="subtitle">
-            République de Côte d'Ivoire / Ministère de l'Economie et des Finances<br>
-            Direction Générale du Trésor et de la Comptabilité Publique (DGTCP)<br>
-            Direction des Systèmes Financiers Décentralisés (DSFD)
+<div class="dashboard">
+    <div class="page-header">
+        <div class="header-left">
+            <h1><i class="fas fa-piggy-bank"></i> R07 - CONSTITUTION DE LA RÉSERVE GÉNÉRALE</h1>
+            <div class="subtitle">République de Côte d'Ivoire / DGTCP / DSFD</div>
+            <div class="badge">Norme BCEAO : Dotation ≥ 15% du bénéfice distribuable</div>
         </div>
-        <div class="badge">Norme BCEAO : ≥ 15% du bénéfice</div>
-    </div>
-    
-    <div class="filters">
-        <div class="filter-group">
-            <label>Exercice</label>
-            <select name="exercice" id="exercice">
-                <?php for($y = 2020; $y <= date('Y')+1; $y++): ?>
-                    <option value="<?= $y ?>" <?= $y == $exercice ? 'selected' : '' ?>><?= $y ?></option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Mois</label>
-            <select name="mois" id="mois">
-                <?php for($m = 1; $m <= 12; $m++): ?>
-                    <option value="<?= $m ?>" <?= $m == $mois ? 'selected' : '' ?>>
-                        <?= str_pad($m, 2, '0', STR_PAD_LEFT) ?> - 
-                        <?= date('F', mktime(0,0,0,$m,1)) ?>
-                    </option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <button class="btn btn-primary" onclick="appliquerFiltres()">Appliquer</button>
-        </div>
-        <div class="filter-group">
-            <button class="btn" onclick="exporterPDF()" style="background:#f5f5f5;">📄 Exporter PDF</button>
+        <div class="btn-group">
+            <button class="btn-excel" onclick="location.href='?<?=http_build_query(array_merge($_GET,['export'=>'excel']))?>'"><i class="fas fa-file-excel"></i> Excel</button>
+            <button class="btn-pdf" onclick="location.href='?<?=http_build_query(array_merge($_GET,['export'=>'pdf']))?>'"><i class="fas fa-file-pdf"></i> PDF</button>
         </div>
     </div>
-    
-    <?php if($baseCalcul <= 0): ?>
-    <div class="warning">
-        ⚠️ <strong>Information :</strong> L'institution n'a pas réalisé de bénéfice pour l'exercice <?= $exercice ?> 
-        (Résultat bénéficiaire: <?= number_format($resultatExercice, 0, ',', ' ') ?> FCFA, 
-        Report à nouveau déficitaire: <?= number_format($reportNouveauNegatif, 0, ',', ' ') ?> FCFA).<br>
-        La constitution de la réserve générale n'est pas exigée en l'absence de bénéfice distribuable.
+
+    <!-- Filtres période -->
+    <div class="card" id="filtersCard">
+        <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres de période</div>
+        <div class="filters-row">
+            <div class="filter-item"><label>Année</label><select id="exerciceSelect"><?php for($y=2020;$y<=date('Y')+1;$y++): ?><option value="<?=$y?>" <?=$y==$exercice?'selected':''?>><?=$y?></option><?php endfor; ?></select></div>
+            <div class="filter-item"><label>Type de période</label><select id="typePeriodeSelect"><option value="mensuel" <?=$type_periode=='mensuel'?'selected':''?>>Mensuel</option><option value="trimestre" <?=$type_periode=='trimestre'?'selected':''?>>Trimestre</option><option value="semestre" <?=$type_periode=='semestre'?'selected':''?>>Semestre</option><option value="annuel" <?=$type_periode=='annuel'?'selected':''?>>Annuel</option></select></div>
+            <div class="filter-item" id="dynamicSelectContainer"><?php if($type_periode=='mensuel'): ?><label>Mois</label><select id="moisSelect"><?php for($m=1;$m<=12;$m++): ?><option value="<?=$m?>" <?=$m==$mois?'selected':''?>><?=str_pad($m,2,'0',STR_PAD_LEFT)?> - <?=date('F',mktime(0,0,0,$m,1))?></option><?php endfor; ?></select><?php elseif($type_periode=='trimestre'): ?><label>Trimestre</label><select id="trimestreSelect"><?php for($t=1;$t<=4;$t++): ?><option value="<?=$t?>" <?=$t==$trimestre?'selected':''?>><?=$t?><?=$t==1?'er':'ème'?> Trimestre</option><?php endfor; ?></select><?php elseif($type_periode=='semestre'): ?><label>Semestre</label><select id="semestreSelect"><?php for($s=1;$s<=2;$s++): ?><option value="<?=$s?>" <?=$s==$semestre?'selected':''?>><?=$s?><?=$s==1?'er':'e'?> semestre</option><?php endfor; ?></select><?php else: ?><label>Période</label><input type="text" disabled value="Année complète"><?php endif; ?></div>
+            <button class="btn-apply" onclick="appliquerFiltres()">Appliquer</button>
+        </div>
     </div>
-    <?php endif; ?>
-    
+
+    <!-- Carte ratio -->
     <div class="ratio-card">
-        <div class="ratio-title">📊 Ratio R07 - Constitution de la réserve générale</div>
-        <div class="ratio-value-container">
-            <div class="ratio-value">
-                <div class="value <?= ($baseCalcul > 0 && $ratioR07 >= $normeMin) ? 'conforme' : (($baseCalcul > 0) ? 'non-conforme' : '') ?>">
-                    <?= number_format($pourcentageAtteint, 2) ?>%
-                </div>
-                <div class="label">Dotation / Bénéfice</div>
-            </div>
-            <div class="norme">
-                <div class="title">Norme réglementaire</div>
-                <div class="range">Dotation ≥ 15% du bénéfice</div>
-                <div class="label">Conformité requise</div>
-            </div>
-            <div>
-                <span class="status-badge <?= ($baseCalcul <= 0) ? 'status-na' : (($ratioR07 >= $normeMin) ? 'status-conforme' : 'status-non-conforme') ?>">
-                    <?= ($baseCalcul <= 0) ? 'N/A - Pas de bénéfice' : $conformite ?>
-                </span>
-            </div>
+        <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:20px;">
+            <div><div class="card-header" style="padding:0;">Ratio R07 – Taux de dotation</div><div class="ratio-value <?=($base>0 && $pourcentage>=15)?'conforme':'non-conforme'?>"><?=($base>0)?number_format($pourcentage,2).'%':'N/A'?></div><div>Dotation / Base</div></div>
+            <div class="norme-box"><div><strong>Norme BCEAO</strong></div><div style="font-size:1.5rem;">≥ 15%</div><div>Seuil minimal : 15%</div></div>
+            <div><span class="badge" style="background:<?=($base>0)?($pourcentage>=15?'#10b981':'#ef4444'):'#6b7280'?>;"><?=$conformite?></span></div>
         </div>
-        <?php if($baseCalcul > 0): ?>
-        <div class="progress-bar" style="margin-top: 20px;">
-            <div class="progress-fill <?= ($ratioR07 >= $normeMin) ? '' : 'non-conforme' ?>" 
-                 style="width: <?= min($pourcentageAtteint, 100) ?>%;">
-                <?= number_format($pourcentageAtteint, 1) ?>%
-            </div>
-        </div>
+        <?php if($base>0): ?>
+        <div class="progress-bar"><div class="progress-fill <?=($pourcentage<15?'non-conforme':'')?>" style="width:<?=min($pourcentage,100)?>%;"><?=number_format($pourcentage,1)?>%</div></div>
+        <div style="margin-top:16px;"><i class="fas fa-calculator"></i> R07 = <?=number_format($dotation,0,',',' ')?> / <?=number_format($base,0,',',' ')?> = <?=number_format($pourcentage,2)?>%</div>
+        <?php else: ?>
+        <div class="info-box" style="margin-top:16px; background:#fefce8;"><i class="fas fa-info-circle"></i> Aucun bénéfice distribuable pour l'exercice <?=$exercice?>.</div>
         <?php endif; ?>
     </div>
-    
-    <div class="data-table">
-        <h3>📋 A - Base de calcul (Résultat de l'exercice)</h3>
-        <table>
-            <thead>
-                <tr><th>Code</th><th>Libellé</th><th class="text-right">Montant (FCFA)</th></tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td>L80<\/td>
-                    <td>Résultat excédentaire de l'exercice (bénéfice) (A) </td>
-                    <td class="text-right <?= $resultatExercice > 0 ? 'conforme' : '' ?>">
-                        <?= number_format($resultatExercice, 0, ',', ' ') ?>
-                    </td>
-                </tr>
-                <tr>
-                    <td>L70</td>
-                    <td>Report à nouveau déficitaire (B) </td>
-                    <td class="text-right <?= $reportNouveauNegatif > 0 ? 'non-conforme' : '' ?>">
-                        <?= number_format($reportNouveauNegatif, 0, ',', ' ') ?>
-                    </td>
-                </tr>
-                <tr style="background:#f0f7ff; font-weight:bold;">
-                    <td colspan="2">BASE = A - B</td>
-                    <td class="text-right"><?= number_format($baseCalcul, 0, ',', ' ') ?></td>
-                </tr>
-            </tbody>
-        </table>
-        <div style="padding: 10px 15px; background: #f8f9fa; font-size: 0.8rem;">
-            📌 <strong>Note :</strong> La base de calcul est le résultat bénéficiaire de l'exercice, diminué du report à nouveau déficitaire.
-            <br>📌 <strong>Montant minimal à doter :</strong> <?= number_format($montantReserveMinimal, 0, ',', ' ') ?> FCFA (15% de la base)
+
+    <!-- Deux colonnes web (corrigées avec classes de largeur) -->
+    <div class="two-columns">
+        <div class="card">
+            <div class="card-header"><i class="fas fa-chart-line"></i> A – BASE DE CALCUL</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant</th></tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach($lignesBase as $r): ?>
+                        <tr><td class="col-code"><?=$r['code']?></td><td class="col-libelle"><?=$r['lib']?></td><td class="col-montant text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="total-row"><td colspan="2">BASE = Bénéfice - Report déficitaire</td><td class="text-right"><?=number_format($base,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><i class="fas fa-coins"></i> B – DOTATION À LA RÉSERVE</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant</th></tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach($lignesDotation as $r): ?>
+                        <tr><td class="col-code"><?=$r['code']?></td><td class="col-libelle"><?=$r['lib']?></td><td class="col-montant text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="total-row"><td colspan="2">TOTAL DOTATION</td><td class="text-right"><?=number_format($dotation,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
-    
-    <div class="data-table">
-        <h3>💰 B - Dotation annuelle de la réserve générale</h3>
-        <table>
-            <thead>
-                <tr><th>Code</th><th>Libellé</th><th class="text-right">Montant (FCFA)</th></tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td>Compte 106</td>
-                    <td>Dotation annuelle de la réserve générale (C)</td>
-                    <td class="text-right"><?= number_format($dotationReserve, 0, ',', ' ') ?></td>
-                </tr>
-                <tr style="background:#f0f7ff; font-weight:bold;">
-                    <td colspan="2">TOTAL Dotation</td>
-                    <td class="text-right"><?= number_format($dotationReserve, 0, ',', ' ') ?></td>
-                </tr>
-            </tbody>
-        </table>
-        <div style="padding: 10px 15px; background: #f8f9fa; font-size: 0.8rem;">
-            📌 <strong>Solde actuel de la réserve générale :</strong> <?= number_format($soldeReserveGeneral, 0, ',', ' ') ?> FCFA
-        </div>
-    </div>
-    
+
     <?php if(!empty($detailsDotation)): ?>
-    <div class="data-table">
-        <h3>📝 Détail des écritures de dotation à la réserve générale</h3>
-        <table>
-            <thead>
-                <tr>
-                    <th>Date</th>
-                    <th>N° pièce</th>
-                    <th>Libellé</th>
-                    <th class="text-right">Montant (FCFA)</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach($detailsDotation as $dotation): ?>
-                <tr>
-                    <td><?= date('d/m/Y', strtotime($dotation['date_ecriture'])) ?></td>
-                    <td><?= htmlspecialchars($dotation['numero_piece'] ?? '-') ?></td>
-                    <td><?= htmlspecialchars($dotation['libelle_ecriture']) ?></td>
-                    <td class="text-right"><?= number_format($dotation['montant'], 0, ',', ' ') ?></td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+    <div class="card">
+        <div class="card-header"><i class="fas fa-list-alt"></i> Détail des écritures de dotation</div>
+        <div class="table-wrapper">
+            <table>
+                <thead><tr><th>Date</th><th>N° pièce</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead>
+                <tbody>
+                    <?php foreach($detailsDotation as $d): ?>
+                    <tr>
+                        <td><?=date('d/m/Y', strtotime($d['date_ecriture']))?></td>
+                        <td><?=htmlspecialchars($d['numero_piece']??'-')?></td>
+                        <td><?=htmlspecialchars($d['libelle_ecriture'])?></td>
+                        <td class="text-right"><?=number_format($d['montant'],0,',',' ')?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
     <?php endif; ?>
-    
-    <div class="data-table">
-        <h3>📊 Synthèse du ratio R07</h3>
-        <table>
-            <tbody>
-                <tr>
-                    <td style="width: 60%;"><strong>Base de calcul (Bénéfice - Report déficitaire)</strong></td>
-                    <td class="text-right"><strong><?= number_format($baseCalcul, 0, ',', ' ') ?> FCFA</strong></td>
-                </tr>
-                <tr>
-                    <td><strong>Dotation à la réserve générale</strong></td>
-                    <td class="text-right"><strong><?= number_format($dotationReserve, 0, ',', ' ') ?> FCFA</strong></td>
-                </tr>
-                <tr style="background:#f0f7ff;">
-                    <td><strong>RATIO R07 = Dotation / Base</strong></td>
-                    <td class="text-right"><strong><?= number_format($pourcentageAtteint, 2) ?>%</strong></td>
-                </tr>
-                <tr>
-                    <td><strong>Objectif minimum (norme BCEAO)</strong></td>
-                    <td class="text-right"><strong>15%</strong></td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
-    
-    <div class="data-table">
-        <h3>📖 Interprétation du ratio R07</h3>
-        <div style="padding: 15px; line-height: 1.6;">
-            <p><strong>Ratio calculé :</strong> <?= number_format($pourcentageAtteint, 2) ?>%</p>
-            <p><strong>Formule :</strong> R07 = (Dotation à la réserve générale) / (Résultat bénéficiaire - Report à nouveau déficitaire)</p>
-            <p><strong>Norme BCEAO :</strong> La dotation annuelle doit être <strong>au moins égale à 15%</strong> du bénéfice distribuable.</p>
-            <p><strong>Interprétation :</strong></p>
-            <ul style="margin-left: 25px; margin-top: 10px;">
-                <?php if($baseCalcul <= 0): ?>
-                    <li style="color:#1565c0;">ℹ️ Aucun bénéfice distribuable pour l'exercice <?= $exercice ?>.</li>
-                    <li>La constitution de la réserve générale n'est pas exigée en l'absence de bénéfice.</li>
-                    <li>L'institution doit s'efforcer de retrouver la rentabilité lors des prochains exercices.</li>
-                <?php elseif($ratioR07 >= $normeMin): ?>
-                    <li style="color:#2e7d32;">✓ Le ratio est <strong>CONFORME</strong> à la réglementation BCEAO.</li>
-                    <li>La dotation annuelle représente <?= number_format($pourcentageAtteint, 2) ?>% du bénéfice, soit au moins 15% requis.</li>
-                    <li>L'institution constitue correctement ses réserves.</li>
-                <?php else: ?>
-                    <li style="color:#c62828;">✗ Le ratio est <strong>NON CONFORME</strong> à la réglementation BCEAO.</li>
-                    <li>La dotation annuelle représente seulement <?= number_format($pourcentageAtteint, 2) ?>% du bénéfice, alors que 15% sont requis.</li>
-                    <li>L'institution doit augmenter sa dotation à la réserve générale d'au moins <?= number_format($montantReserveMinimal - $dotationReserve, 0, ',', ' ') ?> FCFA.</li>
-                    <li>Il est recommandé de :</li>
-                    <ul style="margin-left: 25px;">
-                        <li>Augmenter la dotation à la réserve générale lors de l'affectation des résultats</li>
-                        <li>Respecter le minimum réglementaire de 15%</li>
-                    </ul>
-                <?php endif; ?>
-            </ul>
-            <?php if($capitalSocial > 0): ?>
-            <p style="margin-top: 15px; font-size: 0.9rem; color: #666;">
-                <strong>Note :</strong> Capital social de l'institution : <?= number_format($capitalSocial, 0, ',', ' ') ?> FCFA
-            </p>
-            <?php endif; ?>
-        </div>
-    </div>
-    
-    <div class="footer">
-        Document généré le <?= date('d/m/Y à H:i:s') ?> - Données extraites de la base Mandigo<br>
-        Période : <?= $periode ?> (exercice <?= $exercice ?>)
-    </div>
-</div>
 
+    <div class="card"><div class="card-header">Interprétation</div><div class="info-box"><i class="fas fa-gavel"></i><div><?php if($base<=0): ?>ℹ️ Aucun bénéfice distribuable. La constitution de la réserve n'est pas exigée.<?php elseif($pourcentage>=15): ?>✓ Conforme – La dotation annuelle (<?=number_format($pourcentage,2)?>%) atteint au moins 15% du bénéfice distribuable.<?php else: ?>⚠️ Non conforme – La dotation annuelle (<?=number_format($pourcentage,2)?>%) est inférieure au minimum requis de 15%. Il manque <?=number_format($montantMinimal - $dotation,0,',',' ')?> FCFA.<?php endif; ?></div></div></div>
+
+    <div class="page-footer"><i class="fas fa-calendar-alt"></i> Généré le <?=date('d/m/Y à H:i:s')?> – Période <?=$exercice?> (<?=ucfirst($type_periode)?>) arrêtée au <?=date('d/m/Y',strtotime($date_fin_periode))?></div>
+</div>
 <script>
+    function updateDynamicSelect() {
+        const type = document.getElementById('typePeriodeSelect').value;
+        const container = document.getElementById('dynamicSelectContainer');
+        const currentMois = <?=$mois?>;
+        const currentTrimestre = <?=$trimestre?>;
+        const currentSemestre = <?=json_encode($semestre)?>;
+        let html = '';
+        if (type === 'mensuel') {
+            html = '<label>Mois</label><select id="moisSelect">';
+            for (let m = 1; m <= 12; m++) { html += `<option value="${m}" ${m===currentMois?'selected':''}>${String(m).padStart(2,'0')} - ${new Date(2000,m-1,1).toLocaleString('fr',{month:'long'})}</option>`; }
+            html += '</select>';
+        } else if (type === 'trimestre') {
+            html = '<label>Trimestre</label><select id="trimestreSelect">';
+            for (let t = 1; t <= 4; t++) { html += `<option value="${t}" ${t===currentTrimestre?'selected':''}>${t}${t===1?'er':'ème'} Trimestre</option>`; }
+            html += '</select>';
+        } else if (type === 'semestre') {
+            html = '<label>Semestre</label><select id="semestreSelect">';
+            for (let s = 1; s <= 2; s++) { html += `<option value="${s}" ${s===currentSemestre?'selected':''}>${s}${s===1?'er':'e'} semestre</option>`; }
+            html += '</select>';
+        } else {
+            html = '<label>Période</label><input type="text" disabled value="Année complète">';
+        }
+        container.innerHTML = html;
+    }
     function appliquerFiltres() {
-        let exercice = document.getElementById('exercice').value;
-        let mois = document.getElementById('mois').value;
-        window.location.href = 'R07.php?exercice=' + exercice + '&mois=' + mois;
+        let url = 'R07.php?exercice=' + document.getElementById('exerciceSelect').value + '&type_periode=' + document.getElementById('typePeriodeSelect').value;
+        let type = document.getElementById('typePeriodeSelect').value;
+        if (type === 'mensuel') url += '&mois=' + document.getElementById('moisSelect').value;
+        else if (type === 'trimestre') url += '&trimestre=' + document.getElementById('trimestreSelect').value;
+        else if (type === 'semestre') url += '&semestre=' + document.getElementById('semestreSelect').value;
+        window.location.href = url;
     }
-    
-    function exporterPDF() {
-        window.print();
-    }
+    document.addEventListener('DOMContentLoaded', function() { updateDynamicSelect(); document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect); });
 </script>
 </body>
 </html>

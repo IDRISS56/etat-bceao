@@ -1,148 +1,189 @@
 <?php
-// DIMF_2013.php - Prêts aux dirigeants
-// Déclaration SICS-BCEAO
-
+// DIMF_2013.php - Prêts aux dirigeants (avec FPDF)
 session_start();
 
-// Configuration BDD
-$host = 'localhost';
-$dbname = 'mandigo';
-$username = 'root';
-$password = '';
+require_once '../../fpdf/fpdf.php';
 
+class PDF_DIMF extends FPDF {
+    public $codeDimf = 'DIMF';
+    public $titreDimf = 'Etat financier';
+    public $nomSfd = 'SFD';
+    public $periode = '';
+    public $exercice = '';
+
+    static function u($str) {
+        return mb_convert_encoding($str, 'ISO-8859-1', 'UTF-8');
+    }
+
+    function Header() { /* identique aux autres fichiers */ 
+        $this->SetFillColor(156,163,175);
+        $this->Rect(0,0,$this->GetPageWidth(),28,'F');
+        $this->SetFont('Arial','',7);
+        $this->SetTextColor(255,255,255);
+        $this->SetXY(8,3);
+        $this->Cell(0,4,self::u('Republique de Cote d\'Ivoire  •  Ministere de l\'Economie et des Finances  -  DGTCP / DSFD'),0,1,'L');
+        $this->SetFont('Arial','B',13);
+        $this->SetX(8);
+        $this->Cell(0,7,self::u($this->codeDimf.'  -  '.$this->titreDimf),0,1,'L');
+        $this->SetFont('Arial','',8);
+        $this->SetX(8);
+        $this->Cell(0,5,self::u('SFD : '.$this->nomSfd.'   |   Periode : '.$this->periode.'   |   Exercice : '.$this->exercice.'   |   Arrete au : '.date('d/m/Y')),0,1,'L');
+        $this->SetTextColor(0,0,0);
+        $this->Ln(4);
+    }
+    function Footer() { $this->SetY(-12); $this->SetFont('Arial','I',7); $this->SetTextColor(100,116,139); $this->Cell(0,4,self::u('SICS-BCEAO  •  Genere le '.date('d/m/Y a H:i:s').'  •  Page '.$this->PageNo().'/{nb}'),0,0,'C'); }
+    function SectionTitle($label) { $this->SetFont('Arial','B',9); $this->SetFillColor(0,0,0); $this->SetTextColor(255,255,255); $this->Cell(0,7,self::u('  '.strtoupper($label)),0,1,'L',true); $this->SetTextColor(0,0,0); $this->Ln(1); }
+    function TableHeader($cols) { $this->SetFont('Arial','B',8); $this->SetFillColor(248,250,252); $this->SetTextColor(30,41,59); $this->SetDrawColor(226,232,240); foreach($cols as $col){ $align=isset($col['align'])?$col['align']:'L'; $this->Cell($col['w'],6,self::u($col['label']),1,0,$align,true); } $this->Ln(); }
+    function TableRow($cols,$data,$style='') { $fill=false; if($style=='subtotal'){ $this->SetFillColor(248,250,252); $this->SetFont('Arial','B',8); $fill=true; }elseif($style=='total'){ $this->SetFillColor(240,253,244); $this->SetFont('Arial','B',8.5); $fill=true; }else{ $this->SetFillColor(255,255,255); $this->SetFont('Arial','',7.5); } $this->SetTextColor(15,23,42); $this->SetDrawColor(226,232,240); foreach($cols as $i=>$col){ $val=isset($data[$i])?$data[$i]:''; $align=isset($col['align'])?$col['align']:'L'; $this->Cell($col['w'],5.5,self::u($val),1,0,$align,$fill); } $this->Ln(); }
+    static function montant($val) { return number_format((float)$val,0,',',' ').' F'; }
+}
+
+// Connexion BDD
+$host='localhost'; $dbname='microfinances_dg'; $username='root'; $password='';
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    die("Erreur de connexion : " . $e->getMessage());
-}
+} catch(PDOException $e){ die("Erreur : ".$e->getMessage()); }
 
-// Récupération des paramètres
-$exercice = isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y');
-$trimestre = isset($_GET['trimestre']) ? (int)$_GET['trimestre'] : 4;
-$mois = isset($_GET['mois']) ? (int)$_GET['mois'] : 12;
-$date_fin_periode = $exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01';
-$date_fin_periode = date('Y-m-t', strtotime($date_fin_periode));
+// Paramètres période (identique)
+$exercice = isset($_GET['exercice'])?(int)$_GET['exercice']:date('Y');
+$type_periode = isset($_GET['type_periode'])?$_GET['type_periode']:'mensuel';
+$mois = isset($_GET['mois'])?(int)$_GET['mois']:12;
+$trimestre = isset($_GET['trimestre'])?(int)$_GET['trimestre']:4;
+$semestre = isset($_GET['semestre'])?(int)$_GET['semestre']:null;
+switch ($type_periode) { case 'trimestre': $mois=$trimestre*3; break; case 'semestre': $mois=($semestre==1)?6:12; break; case 'annuel': $mois=12; }
+$date_fin_periode = date('Y-m-t', strtotime($exercice.'-'.str_pad($mois,2,'0',STR_PAD_LEFT).'-01'));
 
 // ============================================================
 // RÉCUPÉRATION DES PRÊTS AUX DIRIGEANTS
 // ============================================================
-
-// Liste des rôles considérés comme dirigeants
-$roles_dirigeants = ['Superviseur', 'Administrateur', 'Responsable', 'Directeur'];
-
 $prets_dirigeants = [];
 $total_encours_dirigeants = 0;
-
 try {
-    // Récupération de tous les prêts accordés aux dirigeants
     $stmt = $pdo->prepare("
         SELECT 
-            u.utilisateur_id,
-            u.matricule,
-            u.nom_prenom,
-            u.role,
-            u.telephone,
-            u.email,
-            d.dossier_id,
-            d.date_octroi,
-            d.montant as montant_initial,
+            u.utilisateur_id, u.matricule, u.nom_prenom, u.role, u.telephone, u.email,
+            d.dossier_id, d.date_octroi, d.montant as montant_initial,
             COALESCE(d.montant - COALESCE(e.rembourse, 0), d.montant) as encours_restant,
-            d.duree,
-            d.objet,
-            d.statut as dossier_statut,
+            d.duree, d.objet, d.statut as dossier_statut,
             (SELECT COUNT(*) FROM echeances WHERE dossier_id = d.dossier_id AND statut = 'attente' AND date_echeance < :date_fin) as nb_impayes
         FROM dossiers d
         INNER JOIN utilisateurs u ON d.utilisateur_id = u.utilisateur_id
-        LEFT JOIN (
-            SELECT dossier_id, SUM(montant) as rembourse
-            FROM echeances
-            WHERE statut = 'payee'
-            GROUP BY dossier_id
-        ) e ON d.dossier_id = e.dossier_id
-        WHERE u.role IN ('Superviseur', 'Administrateur', 'Responsable', 'Directeur')
-          AND d.statut IN ('actif', 'approuve')
+        LEFT JOIN (SELECT dossier_id, SUM(montant) as rembourse FROM echeances WHERE statut = 'payee' GROUP BY dossier_id) e ON d.dossier_id = e.dossier_id
+        WHERE u.role IN ('Superviseur','Administrateur','Responsable','Directeur')
+          AND d.statut IN ('actif','approuve')
           AND d.date_octroi <= :date_fin
         ORDER BY encours_restant DESC
     ");
-    $stmt->execute([':date_fin' => $date_fin_periode]);
+    $stmt->execute([':date_fin'=>$date_fin_periode]);
     $prets_dirigeants = $stmt->fetchAll();
-    
-    foreach ($prets_dirigeants as $pret) {
-        $total_encours_dirigeants += $pret['encours_restant'];
-    }
-} catch (PDOException $e) {
-    $prets_dirigeants = [];
-    $total_encours_dirigeants = 0;
-}
+    foreach($prets_dirigeants as $p) $total_encours_dirigeants += (float)$p['encours_restant'];
+} catch(PDOException $e){ $prets_dirigeants=[]; }
 
-// Récupération des fonds propres pour calcul du ratio R03
+// Fonds propres
 $fonds_propres = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.classe_compte = '1'
-          AND e.date_ecriture <= :date_fin
-    ");
-    $stmt->execute([':date_fin' => $date_fin_periode]);
-    $result = $stmt->fetch();
-    $fonds_propres = $result['total'];
-} catch (PDOException $e) {
-    $fonds_propres = 0;
-}
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.classe_compte = '1' AND e.date_ecriture <= :date_fin AND e.statut = 'VALIDÉE'");
+    $stmt->execute([':date_fin'=>$date_fin_periode]);
+    $fonds_propres = (float)$stmt->fetch()['total'];
+} catch(PDOException $e){ $fonds_propres=0; }
 
-// Récupération de tous les utilisateurs avec rôle dirigeant (même sans prêt)
-$tous_dirigeants = [];
-try {
-    $stmt = $pdo->prepare("
-        SELECT 
-            utilisateur_id,
-            matricule,
-            nom_prenom,
-            role,
-            telephone,
-            email,
-            etat
-        FROM utilisateurs
-        WHERE role IN ('Superviseur', 'Administrateur', 'Responsable', 'Directeur')
-          AND etat = 'actif'
-        ORDER BY nom_prenom
-    ");
-    $stmt->execute();
-    $tous_dirigeants = $stmt->fetchAll();
-} catch (PDOException $e) {
-    $tous_dirigeants = [];
-}
-
-// Calcul du ratio R03 (Prêts aux dirigeants / Fonds propres)
-$ratio_r03 = ($fonds_propres > 0) ? ($total_encours_dirigeants / $fonds_propres) : 0;
-$norme_r03 = 0.10; // 10%
+$ratio_r03 = ($fonds_propres>0)?($total_encours_dirigeants/$fonds_propres):0;
+$norme_r03 = 0.10;
 $conformite_r03 = ($ratio_r03 <= $norme_r03) ? 'CONFORME' : 'NON CONFORME';
 
-// Récupération des engagements par signature des dirigeants (garanties données)
+// Engagements par signature des dirigeants
 $engagements_dirigeants = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(g.valeur_nette), 0) as total
-        FROM garanties g
-        INNER JOIN dossiers d ON g.credit_id = d.dossier_id
-        INNER JOIN utilisateurs u ON d.utilisateur_id = u.utilisateur_id
-        WHERE u.role IN ('Superviseur', 'Administrateur', 'Responsable', 'Directeur')
-          AND g.statut = 'actif'
-    ");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(g.valeur_nette),0) as total FROM garanties g INNER JOIN dossiers d ON g.credit_id = d.dossier_id INNER JOIN utilisateurs u ON d.utilisateur_id = u.utilisateur_id WHERE u.role IN ('Superviseur','Administrateur','Responsable','Directeur') AND g.statut='actif'");
     $stmt->execute();
-    $result = $stmt->fetch();
-    $engagements_dirigeants = $result['total'];
-} catch (PDOException $e) {
-    $engagements_dirigeants = 0;
-}
+    $engagements_dirigeants = (float)$stmt->fetch()['total'];
+} catch(PDOException $e){ $engagements_dirigeants=0; }
 
-// Exposition totale dirigeants (prêts + engagements)
-$exposition_totale_dirigeants = $total_encours_dirigeants + $engagements_dirigeants;
-$ratio_exposition = ($fonds_propres > 0) ? ($exposition_totale_dirigeants / $fonds_propres) : 0;
+$exposition_totale = $total_encours_dirigeants + $engagements_dirigeants;
+$ratio_exposition = ($fonds_propres>0)?($exposition_totale/$fonds_propres):0;
+
+// Liste des dirigeants
+$tous_dirigeants = [];
+try {
+    $stmt = $pdo->prepare("SELECT utilisateur_id, matricule, nom_prenom, role, telephone, email, etat FROM utilisateurs WHERE role IN ('Superviseur','Administrateur','Responsable','Directeur') AND etat='actif' ORDER BY nom_prenom");
+    $stmt->execute();
+    $tous_dirigeants = $stmt->fetchAll();
+} catch(PDOException $e){ $tous_dirigeants=[]; }
+
+$encours_par_dirigeant = [];
+foreach($prets_dirigeants as $p) $encours_par_dirigeant[$p['utilisateur_id']] = ($encours_par_dirigeant[$p['utilisateur_id']]??0) + $p['encours_restant'];
+
+// Génération PDF
+$format = isset($_GET['format'])?$_GET['format']:'html';
+if($format==='pdf'){
+    switch($type_periode){
+        case 'mensuel': $lib_periode='Mois '.str_pad($mois,2,'0',STR_PAD_LEFT).'/'.$exercice; break;
+        case 'trimestre': $lib_periode=$trimestre.'e Trim. '.$exercice; break;
+        case 'semestre': $lib_periode=$semestre.'er Sem. '.$exercice; break;
+        default: $lib_periode='Annee '.$exercice;
+    }
+    $pdf = new PDF_DIMF('L','mm','A4'); $pdf->AliasNbPages();
+    $pdf->codeDimf='DIMF_2013'; $pdf->titreDimf='Prêts aux dirigeants'; $pdf->nomSfd=$_SESSION['nom_sfd']??'SFD'; $pdf->periode=$lib_periode; $pdf->exercice=$exercice;
+    $pdf->SetMargins(8,35,8); $pdf->SetAutoPageBreak(true,14); $pdf->AddPage();
+
+    // Section Ratio R03
+    $pdf->SetFont('Arial','B',9);
+    $pdf->Cell(0,7,PDF_DIMF::u('R03 - LIMITATION DES PRÊTS AUX DIRIGEANTS'),0,1);
+    $pdf->SetFont('Arial','',8);
+    $pdf->MultiCell(0,5,PDF_DIMF::u(
+        "Ratio calculé : ".number_format($ratio_r03*100,2)."% (Norme ≤10%)\n".
+        "Prêts aux dirigeants : ".PDF_DIMF::montant($total_encours_dirigeants)."\n".
+        "Fonds propres : ".PDF_DIMF::montant($fonds_propres)."\n".
+        "Engagements par signature : ".PDF_DIMF::montant($engagements_dirigeants)."\n".
+        "Exposition totale : ".PDF_DIMF::montant($exposition_totale)." (".number_format($ratio_exposition*100,2)."%)\n".
+        "Conformité : $conformite_r03"
+    ));
+    $pdf->Ln(4);
+
+    // Liste des dirigeants
+    $colsDir = [['label'=>'Matricule','w'=>30],['label'=>'Nom et prénom','w'=>45],['label'=>'Fonction','w'=>35],['label'=>'Téléphone','w'=>30],['label'=>'Email','w'=>50],['label'=>'Encours','w'=>35,'align'=>'R'],['label'=>'Statut','w'=>25]];
+    $pdf->SectionTitle('Liste des dirigeants');
+    $pdf->TableHeader($colsDir);
+    foreach($tous_dirigeants as $d){
+        $enc = $encours_par_dirigeant[$d['utilisateur_id']]??0;
+        $pdf->TableRow($colsDir,[
+            PDF_DIMF::u($d['matricule']??'-'),
+            PDF_DIMF::u($d['nom_prenom']??'-'),
+            PDF_DIMF::u($d['role']??'-'),
+            PDF_DIMF::u($d['telephone']??'-'),
+            PDF_DIMF::u($d['email']??'-'),
+            $enc>0?PDF_DIMF::montant($enc):'-',
+            $enc>0?'A un prêt':'Aucun prêt'
+        ]);
+    }
+
+    // Détail des prêts
+    if(!empty($prets_dirigeants)){
+        $pdf->AddPage();
+        $colsPrets = [['label'=>'Dirigeant','w'=>40],['label'=>'Fonction','w'=>30],['label'=>'N° Dossier','w'=>25],['label'=>'Date octroi','w'=>25],['label'=>'Montant initial','w'=>30,'align'=>'R'],['label'=>'Encours restant','w'=>30,'align'=>'R'],['label'=>'Durée','w'=>15,'align'=>'R'],['label'=>'Objet','w'=>40],['label'=>'Impayés','w'=>12,'align'=>'C'],['label'=>'Statut','w'=>20]];
+        $pdf->SectionTitle('Détail des prêts aux dirigeants');
+        $pdf->TableHeader($colsPrets);
+        foreach($prets_dirigeants as $p){
+            $pdf->TableRow($colsPrets,[
+                PDF_DIMF::u($p['nom_prenom']),
+                PDF_DIMF::u($p['role']),
+                $p['dossier_id'],
+                date('d/m/Y',strtotime($p['date_octroi'])),
+                PDF_DIMF::montant($p['montant_initial']),
+                PDF_DIMF::montant($p['encours_restant']),
+                $p['duree'].' mois',
+                PDF_DIMF::u($p['objet']?:'-'),
+                $p['nb_impayes'],
+                ucfirst($p['dossier_statut'])
+            ]);
+        }
+        $pdf->TableRow($colsPrets,['TOTAL','','','','',PDF_DIMF::montant($total_encours_dirigeants),'','','',''],'total');
+    }
+    $pdf->Output('I','DIMF_2013_PretsDirigeants_'.$exercice.'_'.$type_periode.'.pdf');
+    exit;
+}
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -150,477 +191,163 @@ $ratio_exposition = ($fonds_propres > 0) ? ($exposition_totale_dirigeants / $fon
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DIMF_2013 - Prêts aux dirigeants</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f0f2f5;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #1a3a5c, #0d2137);
-            color: white;
-            padding: 25px 30px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        
-        .header h1 {
-            font-size: 1.8rem;
-            margin-bottom: 8px;
-        }
-        
-        .header .subtitle {
-            opacity: 0.9;
-            font-size: 0.95rem;
-        }
-        
-        .badge {
-            display: inline-block;
-            background: #ffc107;
-            color: #1a3a5c;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: bold;
-            margin-top: 10px;
-        }
-        
-        .filters {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            display: flex;
-            gap: 15px;
-            align-items: flex-end;
-            flex-wrap: wrap;
-        }
-        
-        .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .filter-group label {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: #555;
-        }
-        
-        .filter-group select, .filter-group input {
-            padding: 8px 15px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 0.9rem;
-        }
-        
-        .btn {
-            padding: 8px 20px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s;
-        }
-        
-        .btn-primary {
-            background: #1a3a5c;
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background: #0d2137;
-        }
-        
-        .section-card {
-            background: white;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
-        
-        .section-title {
-            padding: 15px 20px;
-            background: #f8f9fa;
-            border-bottom: 2px solid #1a3a5c;
-            font-size: 1.1rem;
-            font-weight: bold;
-            color: #1a3a5c;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        
-        th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
-            font-size: 0.85rem;
-        }
-        
-        tr:hover {
-            background: #f8f9fa;
-        }
-        
-        .text-right {
-            text-align: right;
-        }
-        
-        .text-center {
-            text-align: center;
-        }
-        
-        .total-row {
-            background: #e8f5e9;
-            font-weight: bold;
-        }
-        
-        .warning-row {
-            background: #fff3e0;
-        }
-        
-        .footer {
-            text-align: center;
-            padding: 20px;
-            color: #777;
-            font-size: 0.8rem;
-        }
-        
-        .info-box {
-            background: #e3f2fd;
-            border-left: 4px solid #2196f3;
-            padding: 15px;
-            margin: 15px;
-            border-radius: 8px;
-            font-size: 0.9rem;
-        }
-        
-        .ratio-card {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
-        
-        .ratio-value {
-            font-size: 2rem;
-            font-weight: bold;
-        }
-        
-        .conforme {
-            color: #2e7d32;
-        }
-        
-        .non-conforme {
-            color: #c62828;
-        }
-        
-        .status-badge {
-            display: inline-block;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 0.85rem;
-        }
-        
-        .status-conforme {
-            background: #e8f5e9;
-            color: #2e7d32;
-        }
-        
-        .status-non-conforme {
-            background: #ffebee;
-            color: #c62828;
-        }
-        
-        .progress-bar {
-            background: #e0e0e0;
-            border-radius: 10px;
-            height: 20px;
-            overflow: hidden;
-            margin: 10px 0;
-        }
-        
-        .progress-fill {
-            background: linear-gradient(90deg, #2e7d32, #4caf50);
-            height: 100%;
-            border-radius: 10px;
-            transition: width 0.5s ease;
-        }
-        
-        .progress-fill.non-conforme {
-            background: linear-gradient(90deg, #c62828, #f44336);
-        }
-        
-        @media (max-width: 768px) {
-            .filters {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            table {
-                font-size: 0.7rem;
-            }
-            
-            th, td {
-                padding: 6px 8px;
-            }
-        }
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{font-family:'Inter',sans-serif;background:#f1f5f9;padding:24px;}
+        .dashboard{max-width:1400px;margin:0 auto;}
+        .page-header{background:linear-gradient(135deg,#3b82f6,#60a5fa);border-radius:24px;padding:20px 28px;margin-bottom:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;}
+        .header-left h1{font-size:1.6rem;font-weight:600;color:white;margin-bottom:6px;display:flex;align-items:center;gap:10px;}
+        .subtitle{font-size:0.8rem;color:#e0f2fe;}
+        .badge{background:#2563eb;color:white;padding:4px 12px;border-radius:30px;font-size:0.7rem;}
+        .btn-group{display:flex;gap:12px;}
+        .btn-excel,.btn-pdf{display:inline-flex;align-items:center;gap:8px;padding:8px 20px;border-radius:40px;font-weight:500;font-size:0.85rem;border:none;cursor:pointer;text-decoration:none;}
+        .btn-excel{background:#10b981;color:white;}
+        .btn-pdf{background:#ef4444;color:white;}
+        .card{background:white;border-radius:20px;padding:20px 24px;margin-bottom:24px;box-shadow:0 1px 3px rgba(0,0,0,0.05);}
+        .card-header{display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #eef2f6;font-weight:600;color:#1e40af;}
+        .filters-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:20px;}
+        .filter-item{display:flex;flex-direction:column;gap:6px;}
+        .filter-item label{font-size:0.7rem;font-weight:600;text-transform:uppercase;color:#4b5563;}
+        .filter-item select{border:1px solid #d1d5db;border-radius:12px;padding:8px 14px;font-size:0.85rem;}
+        .btn-apply{background:#3b82f6;color:white;border:none;border-radius:40px;padding:8px 24px;cursor:pointer;}
+        .table-wrapper{overflow-x:auto;}
+        table{width:100%;border-collapse:collapse;font-size:0.85rem;}
+        th{text-align:left;padding:12px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;}
+        td{padding:10px 16px;border-bottom:1px solid #f1f5f9;}
+        .text-right{text-align:right;}
+        .total-row{background:#f0fdf4;font-weight:700;}
+        .info-box{background:#eef2ff;border-left:4px solid #3b82f6;padding:16px 20px;border-radius:16px;}
+        .status-badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:0.7rem;font-weight:600;}
+        .status-conforme{background:#d1fae5;color:#065f46;}
+        .status-non-conforme{background:#fee2e2;color:#991b1b;}
+        .progress-bar{background:#e2e8f0;border-radius:10px;height:8px;overflow:hidden;margin:10px 0;}
+        .progress-fill{background:#10b981;height:100%;border-radius:10px;}
+        .progress-fill.non-conforme{background:#ef4444;}
+        .page-footer{text-align:center;font-size:0.75rem;color:#6b7280;margin-top:16px;}
+        @media print{.btn-group,.page-footer,#filtersCard{display:none;}}
     </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1>DIMF_2013 - PRÊTS AUX DIRIGEANTS</h1>
-        <div class="subtitle">
-            République de Côte d'Ivoire / Ministère de l'Economie et des Finances<br>
-            Direction Générale du Trésor et de la Comptabilité Publique (DGTCP)<br>
-            Direction des Systèmes Financiers Décentralisés (DSFD)
-        </div>
-        <div class="badge">SICS-BCEAO - Conformité R03</div>
+<div class="dashboard">
+    <div class="page-header">
+        <div class="header-left"><h1><i class="fas fa-user-tie"></i> DIMF_2013 - PRÊTS AUX DIRIGEANTS</h1><div class="subtitle">République de Côte d'Ivoire – DGTCP / DSFD</div><div class="badge">SICS-BCEAO • Conformité R03</div></div>
+        <div class="btn-group"><button class="btn-excel" onclick="exporterExcel()"><i class="fas fa-file-excel"></i> Excel</button><a class="btn-pdf" href="?<?= http_build_query(['exercice'=>$exercice,'type_periode'=>$type_periode,'mois'=>$mois,'trimestre'=>$trimestre,'semestre'=>$semestre,'format'=>'pdf']) ?>" target="_blank"><i class="fas fa-file-pdf"></i> PDF</a></div>
     </div>
-    
-    <div class="filters">
-        <div class="filter-group">
-            <label>Exercice</label>
-            <select name="exercice" id="exercice">
-                <?php for($y = 2020; $y <= date('Y')+1; $y++): ?>
-                    <option value="<?= $y ?>" <?= $y == $exercice ? 'selected' : '' ?>><?= $y ?></option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Trimestre</label>
-            <select name="trimestre" id="trimestre">
-                <option value="1" <?= $trimestre == 1 ? 'selected' : '' ?>>1er Trimestre</option>
-                <option value="2" <?= $trimestre == 2 ? 'selected' : '' ?>>2ème Trimestre</option>
-                <option value="3" <?= $trimestre == 3 ? 'selected' : '' ?>>3ème Trimestre</option>
-                <option value="4" <?= $trimestre == 4 ? 'selected' : '' ?>>4ème Trimestre</option>
-            </select>
-        </div>
-        <div class="filter-group">
-            <label>Mois</label>
-            <select name="mois" id="mois">
-                <?php for($m = 1; $m <= 12; $m++): ?>
-                    <option value="<?= $m ?>" <?= $m == $mois ? 'selected' : '' ?>>
-                        <?= str_pad($m, 2, '0', STR_PAD_LEFT) ?> - <?= date('F', mktime(0,0,0,$m,1)) ?>
-                    </option>
-                <?php endfor; ?>
-            </select>
-        </div>
-        <div class="filter-group">
-            <button class="btn btn-primary" onclick="appliquerFiltres()">Appliquer</button>
-        </div>
-        <div class="filter-group">
-            <button class="btn" onclick="exporterPDF()" style="background:#f5f5f5;">📄 Exporter PDF</button>
+    <div class="card" id="filtersCard">
+        <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres</div>
+        <div class="filters-row">
+            <div class="filter-item"><label>Année</label><select id="exerciceSelect"><?php for($y=2020;$y<=date('Y')+1;$y++) echo "<option value='$y' ".($y==$exercice?'selected':'').">$y</option>"; ?></select></div>
+            <div class="filter-item"><label>Type période</label><select id="typePeriodeSelect"><option value="mensuel" <?= $type_periode=='mensuel'?'selected':'' ?>>Mensuel</option><option value="trimestre" <?= $type_periode=='trimestre'?'selected':'' ?>>Trimestre</option><option value="semestre" <?= $type_periode=='semestre'?'selected':'' ?>>Semestre</option><option value="annuel" <?= $type_periode=='annuel'?'selected':'' ?>>Annuel</option></select></div>
+            <div class="filter-item" id="dynamicSelectContainer"><?php
+                if($type_periode=='mensuel'){ echo '<label>Mois</label><select id="moisSelect">'; for($m=1;$m<=12;$m++) echo "<option value='$m' ".($m==$mois?'selected':'').">".str_pad($m,2,'0')." - ".date('F',mktime(0,0,0,$m,1))."</option>"; echo '</select>';
+                }elseif($type_periode=='trimestre'){ echo '<label>Trimestre</label><select id="trimestreSelect">'; for($t=1;$t<=4;$t++) echo "<option value='$t' ".($t==$trimestre?'selected':'').">$t".($t==1?'er':'ème')." Trimestre</option>"; echo '</select>';
+                }elseif($type_periode=='semestre'){ echo '<label>Semestre</label><select id="semestreSelect">'; for($s=1;$s<=2;$s++) echo "<option value='$s' ".($s==$semestre?'selected':'').">$s".($s==1?'er':'e')." semestre</option>"; echo '</select>';
+                }else{ echo '<label>Période</label><input type="text" disabled value="Année complète" style="background:#f3f4f6;">'; }
+            ?></div>
+            <button class="btn-apply" onclick="appliquerFiltres()"><i class="fas fa-filter"></i> Appliquer</button>
         </div>
     </div>
-    
-    <!-- Ratio R03 - Limitation des prêts aux dirigeants -->
-    <div class="ratio-card">
-        <div class="section-title">📊 R03 - LIMITATION DES PRÊTS AUX DIRIGEANTS</div>
-        <div class="info-box">
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
-                <div>
-                    <strong>Ratio calculé :</strong>
-                    <span class="ratio-value <?= $ratio_r03 <= $norme_r03 ? 'conforme' : 'non-conforme' ?>">
-                        <?= number_format($ratio_r03 * 100, 2) ?>%
-                    </span>
-                </div>
-                <div>
-                    <strong>Norme BCEAO :</strong> ≤ 10%
-                </div>
-                <div>
-                    <span class="status-badge <?= $conformite_r03 == 'CONFORME' ? 'status-conforme' : 'status-non-conforme' ?>">
-                        <?= $conformite_r03 ?>
-                    </span>
-                </div>
-            </div>
-            <div class="progress-bar" style="margin-top: 15px;">
-                <div class="progress-fill <?= $ratio_r03 <= $norme_r03 ? '' : 'non-conforme' ?>" 
-                     style="width: <?= min($ratio_r03 * 100, 100) ?>%;">
-                </div>
-            </div>
-            <div style="margin-top: 15px; font-size: 0.85rem;">
-                <strong>Prêts aux dirigeants :</strong> <?= number_format($total_encours_dirigeants, 0, ',', ' ') ?> FCFA<br>
-                <strong>Fonds propres :</strong> <?= number_format($fonds_propres, 0, ',', ' ') ?> FCFA<br>
-                <strong>Engagements par signature des dirigeants :</strong> <?= number_format($engagements_dirigeants, 0, ',', ' ') ?> FCFA<br>
-                <strong>Exposition totale des dirigeants :</strong> <?= number_format($exposition_totale_dirigeants, 0, ',', ' ') ?> FCFA (<?= number_format($ratio_exposition * 100, 2) ?>% des fonds propres)
-            </div>
-        </div>
-    </div>
-    
-    <!-- Liste des dirigeants -->
-    <div class="section-card">
-        <div class="section-title">👥 LISTE DES DIRIGEANTS</div>
-        <div style="overflow-x: auto;">
-            <?php if(empty($tous_dirigeants)): ?>
-                <div class="info-box">Aucun dirigeant enregistré dans la base.</div>
-            <?php else: ?>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Matricule</th>
-                            <th>Nom et prénom</th>
-                            <th>Fonction</th>
-                            <th>Téléphone</th>
-                            <th>Email</th>
-                            <th class="text-right">Encours prêts (FCFA)</th>
-                            <th>Statut</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php 
-                        $dirigeants_avec_prets = [];
-                        foreach ($prets_dirigeants as $pret) {
-                            $dirigeants_avec_prets[$pret['utilisateur_id']] = true;
-                        }
-                        
-                        foreach ($tous_dirigeants as $dirigeant):
-                            $encours_dirigeant = 0;
-                            foreach ($prets_dirigeants as $pret) {
-                                if ($pret['utilisateur_id'] == $dirigeant['utilisateur_id']) {
-                                    $encours_dirigeant += $pret['encours_restant'];
-                                }
-                            }
-                            $has_prets = isset($dirigeants_avec_prets[$dirigeant['utilisateur_id']]);
-                        ?>
-                            <tr class="<?= $has_prets ? '' : '' ?>">
-                                <td><?= htmlspecialchars($dirigeant['matricule'] ?? '-') ?></td>
-                                <td><?= htmlspecialchars($dirigeant['nom_prenom'] ?? '-') ?></td>
-                                <td><?= htmlspecialchars($dirigeant['role'] ?? '-') ?></td>
-                                <td><?= htmlspecialchars($dirigeant['telephone'] ?? '-') ?></td>
-                                <td><?= htmlspecialchars($dirigeant['email'] ?? '-') ?></td>
-                                <td class="text-right <?= $encours_dirigeant > 0 ? 'conforme' : '' ?>">
-                                    <?= $encours_dirigeant > 0 ? number_format($encours_dirigeant, 0, ',', ' ') : '-' ?>
-                                </td>
-                                <td>
-                                    <?php if($has_prets): ?>
-                                        <span class="status-badge status-conforme" style="background:#e8f5e9; padding:2px 8px;">A un prêt</span>
-                                    <?php else: ?>
-                                        <span style="color:#777;">Aucun prêt</span>
-                                    <?php endif; ?>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            <?php endif; ?>
-        </div>
-    </div>
-    
-    <!-- Détail des prêts aux dirigeants -->
-    <div class="section-card">
-        <div class="section-title">💰 DÉTAIL DES PRÊTS AUX DIRIGEANTS</div>
-        <div style="overflow-x: auto;">
-            <?php if(empty($prets_dirigeants)): ?>
-                <div class="info-box">Aucun prêt en cours accordé aux dirigeants.</div>
-            <?php else: ?>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Dirigeant</th>
-                            <th>Fonction</th>
-                            <th>N° Dossier</th>
-                            <th>Date octroi</th>
-                            <th class="text-right">Montant initial</th>
-                            <th class="text-right">Encours restant</th>
-                            <th>Durée</th>
-                            <th>Objet</th>
-                            <th>Impayés</th>
-                            <th>Statut</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach($prets_dirigeants as $pret): ?>
-                        <tr>
-                            <td><?= htmlspecialchars($pret['nom_prenom']) ?></td>
-                            <td><?= htmlspecialchars($pret['role']) ?></td>
-                            <td><?= htmlspecialchars($pret['dossier_id']) ?></td>
-                            <td><?= date('d/m/Y', strtotime($pret['date_octroi'])) ?></td>
-                            <td class="text-right"><?= number_format($pret['montant_initial'], 0, ',', ' ') ?></td>
-                            <td class="text-right"><?= number_format($pret['encours_restant'], 0, ',', ' ') ?></td>
-                            <td class="text-center"><?= $pret['duree'] ?> mois</td>
-                            <td><?= htmlspecialchars($pret['objet'] ?: '-') ?></td>
-                            <td class="text-center <?= $pret['nb_impayes'] > 0 ? 'non-conforme' : '' ?>">
-                                <?= $pret['nb_impayes'] ?>
-                            </td>
-                            <td>
-                                <span class="status-badge <?= $pret['dossier_statut'] == 'actif' ? 'status-conforme' : 'status-non-conforme' ?>" style="font-size:0.7rem;">
-                                    <?= $pret['dossier_statut'] == 'actif' ? 'Actif' : ucfirst($pret['dossier_statut']) ?>
-                                </span>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <tr class="total-row">
-                            <td colspan="5"><strong>TOTAL</strong></td>
-                            <td class="text-right"><strong><?= number_format($total_encours_dirigeants, 0, ',', ' ') ?></strong></td>
-                            <td colspan="4"></td>
-                        </tr>
-                    </tbody>
-                </table>
-            <?php endif; ?>
-        </div>
-    </div>
-    
-    <!-- Interprétation -->
-    <div class="section-card">
-        <div class="section-title">📖 INTERPRÉTATION</div>
-        <div class="info-box">
-            <p><strong>Ratio R03 :</strong> <?= number_format($ratio_r03 * 100, 2) ?>%</p>
-            <p><strong>Norme :</strong> ≤ 10% des fonds propres</p>
-            <?php if($ratio_r03 <= $norme_r03): ?>
-                <p style="color: #2e7d32;">✓ Le ratio est <strong>CONFORME</strong> à la réglementation BCEAO.</p>
-                <p>Les prêts aux dirigeants représentent <?= number_format($ratio_r03 * 100, 2) ?>% des fonds propres, soit dans la limite autorisée de 10%.</p>
-            <?php else: ?>
-                <p style="color: #c62828;">✗ Le ratio est <strong>NON CONFORME</strong> à la réglementation BCEAO.</p>
-                <p>Les prêts aux dirigeants dépassent la limite de 10% des fonds propres.</p>
-                <p>L'institution doit prendre des mesures correctives pour réduire cette exposition.</p>
-            <?php endif; ?>
-        </div>
-    </div>
-    
-    <div class="footer">
-        Document généré le <?= date('d/m/Y à H:i:s') ?> - Données extraites de la base Mandigo<br>
-        Période : <?= $exercice ?> - <?= $trimestre ?>ème trimestre (arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>)
-    </div>
-</div>
 
+    <div class="card">
+        <div class="card-header"><i class="fas fa-chart-line"></i> R03 - LIMITATION DES PRÊTS AUX DIRIGEANTS</div>
+        <div class="info-box">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
+                <div><strong>Ratio calculé :</strong> <span style="font-size:1.8rem; font-weight:700; <?= $ratio_r03<=0.10?'color:#16a34a':'color:#dc2626' ?>"><?= number_format($ratio_r03*100,2) ?>%</span></div>
+                <div><strong>Norme BCEAO :</strong> ≤ 10%</div>
+                <div><span class="status-badge <?= $conformite_r03=='CONFORME'?'status-conforme':'status-non-conforme' ?>"><?= $conformite_r03 ?></span></div>
+            </div>
+            <div class="progress-bar"><div class="progress-fill <?= $ratio_r03>0.10?'non-conforme':'' ?>" style="width: <?= min($ratio_r03*100,100) ?>%;"></div></div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-top:16px;">
+                <div><strong>Prêts aux dirigeants :</strong><br><?= number_format($total_encours_dirigeants,0,',',' ') ?> FCFA</div>
+                <div><strong>Fonds propres :</strong><br><?= number_format($fonds_propres,0,',',' ') ?> FCFA</div>
+                <div><strong>Engagements par signature :</strong><br><?= number_format($engagements_dirigeants,0,',',' ') ?> FCFA</div>
+                <div><strong>Exposition totale :</strong><br><?= number_format($exposition_totale,0,',',' ') ?> FCFA (<?= number_format($ratio_exposition*100,2) ?>%)</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><i class="fas fa-users"></i> LISTE DES DIRIGEANTS</div>
+        <?php if(empty($tous_dirigeants)): ?><div class="info-box">Aucun dirigeant enregistré.</div><?php else: ?>
+        <div class="table-wrapper">
+            <table>
+                <thead><th>Matricule</th><th>Nom et prénom</th><th>Fonction</th><th>Téléphone</th><th>Email</th><th class="text-right">Encours prêts</th><th>Statut</th></thead>
+                <tbody><?php foreach($tous_dirigeants as $d): $enc = $encours_par_dirigeant[$d['utilisateur_id']]??0; ?>
+                <tr>
+                    <td><?= htmlspecialchars($d['matricule']??'-') ?></td>
+                    <td><?= htmlspecialchars($d['nom_prenom']??'-') ?></td>
+                    <td><?= htmlspecialchars($d['role']??'-') ?></td>
+                    <td><?= htmlspecialchars($d['telephone']??'-') ?></td>
+                    <td><?= htmlspecialchars($d['email']??'-') ?></td>
+                    <td class="text-right"><?= $enc>0?number_format($enc,0,',',' '):'-' ?></td>
+                    <td><?= $enc>0?'<span class="status-badge status-conforme">A un prêt</span>':'<span style="color:#64748b;">Aucun prêt</span>' ?></td>
+                </tr><?php endforeach; ?></tbody>
+            </table>
+        </div><?php endif; ?>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><i class="fas fa-hand-holding-usd"></i> DÉTAIL DES PRÊTS AUX DIRIGEANTS</div>
+        <?php if(empty($prets_dirigeants)): ?><div class="info-box">Aucun prêt en cours.</div><?php else: ?>
+        <div class="table-wrapper">
+            <table>
+                <thead><th>Dirigeant</th><th>Fonction</th><th>N° Dossier</th><th>Date octroi</th><th class="text-right">Montant initial</th><th class="text-right">Encours restant</th><th class="text-center">Durée</th><th>Objet</th><th class="text-center">Impayés</th><th>Statut</th></thead>
+                <tbody><?php foreach($prets_dirigeants as $p): ?>
+                <tr>
+                    <td><?= htmlspecialchars($p['nom_prenom']) ?></td>
+                    <td><?= htmlspecialchars($p['role']) ?></td>
+                    <td><?= htmlspecialchars($p['dossier_id']) ?></td>
+                    <td><?= date('d/m/Y',strtotime($p['date_octroi'])) ?></td>
+                    <td class="text-right"><?= number_format($p['montant_initial'],0,',',' ') ?></td>
+                    <td class="text-right"><?= number_format($p['encours_restant'],0,',',' ') ?></td>
+                    <td class="text-center"><?= $p['duree'] ?> mois</td>
+                    <td><?= htmlspecialchars($p['objet']?:'-') ?></td>
+                    <td class="text-center <?= $p['nb_impayes']>0?'non-conforme':'' ?>"><?= $p['nb_impayes'] ?></td>
+                    <td><span class="status-badge <?= $p['dossier_statut']=='actif'?'status-conforme':'status-non-conforme' ?>"><?= ucfirst($p['dossier_statut']) ?></span></td>
+                </tr><?php endforeach; ?>
+                <tr class="total-row"><td colspan="5"><strong>TOTAL</strong></td><td class="text-right"><strong><?= number_format($total_encours_dirigeants,0,',',' ') ?></strong></td><td colspan="4"></td></tr>
+                </tbody>
+            </table>
+        </div><?php endif; ?>
+    </div>
+    <div class="page-footer">Généré le <?= date('d/m/Y à H:i:s') ?> – Période : <?= $exercice ?> (<?= ucfirst($type_periode) ?>) arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?></div>
+</div>
 <script>
-    function appliquerFiltres() {
-        let exercice = document.getElementById('exercice').value;
-        let trimestre = document.getElementById('trimestre').value;
-        let mois = document.getElementById('mois').value;
-        window.location.href = 'DIMF_2013.php?exercice=' + exercice + '&trimestre=' + trimestre + '&mois=' + mois;
+    function updateDynamicSelect() {
+        const type = document.getElementById('typePeriodeSelect').value;
+        const container = document.getElementById('dynamicSelectContainer');
+        let html = '';
+        if (type === 'mensuel') { html = '<label>Mois</label><select id="moisSelect">'; for (let m=1;m<=12;m++) html += `<option value="${m}" ${m==<?= $mois ?>?'selected':''}>${String(m).padStart(2,'0')} - ${new Date(2000,m-1,1).toLocaleString('fr',{month:'long'})}</option>`; html += '</select>'; }
+        else if (type === 'trimestre') { html = '<label>Trimestre</label><select id="trimestreSelect">'; for (let t=1;t<=4;t++) html += `<option value="${t}" ${t==<?= $trimestre ?>?'selected':''}>${t}${t===1?'er':'ème'} Trimestre</option>`; html += '</select>'; }
+        else if (type === 'semestre') { html = '<label>Semestre</label><select id="semestreSelect">'; for (let s=1;s<=2;s++) html += `<option value="${s}" ${s==<?= json_encode($semestre) ?>?'selected':''}>${s}${s===1?'er':'e'} semestre</option>`; html += '</select>'; }
+        else { html = '<label>Période</label><input type="text" disabled value="Année complète" style="background:#f3f4f6;">'; }
+        container.innerHTML = html;
     }
-    
-    function exporterPDF() {
-        window.print();
+    function appliquerFiltres() {
+        let e = document.getElementById('exerciceSelect').value;
+        let t = document.getElementById('typePeriodeSelect').value;
+        let u = 'DIMF_2013.php?exercice='+e+'&type_periode='+t;
+        if (t==='mensuel') u += '&mois='+document.getElementById('moisSelect').value;
+        if (t==='trimestre') u += '&trimestre='+document.getElementById('trimestreSelect').value;
+        if (t==='semestre') u += '&semestre='+document.getElementById('semestreSelect').value;
+        window.location.href = u;
+    }
+    document.addEventListener('DOMContentLoaded',function(){ updateDynamicSelect(); document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect); });
+    function exporterExcel() {
+        const wb = XLSX.utils.book_new();
+        const data = [['DIMF_2013 - PRÊTS AUX DIRIGEANTS'],['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],[],['Indicateur','Valeur']];
+        data.push(['Prêts aux dirigeants (FCFA)',<?= $total_encours_dirigeants ?>]);
+        data.push(['Engagements par signature (FCFA)',<?= $engagements_dirigeants ?>]);
+        data.push(['Exposition totale (FCFA)',<?= $exposition_totale ?>]);
+        data.push(['Fonds propres (FCFA)',<?= $fonds_propres ?>]);
+        data.push(['Ratio R03 (%)',<?= number_format($ratio_r03*100,2,'.','') ?>]);
+        data.push(['Norme BCEAO (%)','10']);
+        data.push(['Conformité','<?= $conformite_r03 ?>']);
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        XLSX.utils.book_append_sheet(wb, ws, "RATIO_R03");
+        XLSX.writeFile(wb, 'DIMF_2013_<?= $exercice ?>_<?= $type_periode ?>.xlsx');
     }
 </script>
 </body>

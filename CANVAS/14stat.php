@@ -6,7 +6,7 @@ session_start();
 
 // Configuration BDD
 $host = 'localhost';
-$dbname = 'mandigo';
+$dbname = 'microfinances_dg';
 $username = 'root';
 $password = '';
 
