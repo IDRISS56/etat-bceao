@@ -1,0 +1,640 @@
+<?php
+// R09.php - Limitation des prises de participation
+// Norme BCEAO: 0% à 25% (0 - 0.25)
+// Version avec POST et Bootstrap 5 (design préservé)
+
+session_start();
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+
+// ------------------------- CONNEXION BDD -------------------------
+require_once('../databases/database.php');
+require_once('../fpdf/fpdf.php');
+
+// ------------------------- LECTURE DES PARAMÈTRES EN POST AVEC DÉFAUTS -------------------------
+$exercice = isset($_POST['exercice']) ? (int)$_POST['exercice'] : date('Y');
+$type_periode = isset($_POST['type_periode']) ? $_POST['type_periode'] : 'annuel';
+$mois = isset($_POST['mois']) ? (int)$_POST['mois'] : 12;
+$trimestre = isset($_POST['trimestre']) ? (int)$_POST['trimestre'] : 4;
+$semestre = isset($_POST['semestre']) ? (int)$_POST['semestre'] : 2;
+$provisionsNonConst = isset($_POST['provisions_non_const']) ? (float)$_POST['provisions_non_const'] : 0;
+
+switch ($type_periode) {
+    case 'mensuel': break;
+    case 'trimestre': $mois = $trimestre * 3; break;
+    case 'semestre': $mois = ($semestre == 1) ? 6 : 12; break;
+    case 'annuel': $mois = 12; break;
+    default: $mois = 12;
+}
+$date_fin_periode = date('Y-m-t', strtotime("$exercice-" . str_pad($mois, 2, '0', STR_PAD_LEFT) . "-01"));
+$date_debut_exercice = "$exercice-01-01";
+$date_fin_exercice = "$exercice-12-31";
+
+// ------------------------- A - TITRES DE PARTICIPATION (nets) -------------------------
+// D1E - Titres de participation (comptes 26)
+$titresParticipation = 0;
+try {
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(montant_debit - montant_credit),0) as total
+        FROM ecritures_comptables e
+        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
+        WHERE pc.numero_compte LIKE '26%' AND e.date_ecriture <= :date_fin
+    ");
+    $stmt->execute([':date_fin' => $date_fin_periode]);
+    $titresParticipation = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) { $titresParticipation = 0; }
+
+// Participations dans les établissements de crédit et SFD (à déduire) – compte 261
+$participationsSFD = 0;
+try {
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(montant_debit - montant_credit),0) as total
+        FROM ecritures_comptables e
+        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
+        WHERE pc.numero_compte LIKE '261%' AND e.date_ecriture <= :date_fin
+    ");
+    $stmt->execute([':date_fin' => $date_fin_periode]);
+    $participationsSFD = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) { $participationsSFD = 0; }
+
+$titresParticipationNets = $titresParticipation - $participationsSFD;
+if ($titresParticipationNets < 0) $titresParticipationNets = 0;
+
+// ------------------------- B - FONDS PROPRES (identique à R08) -------------------------
+// Éléments positifs
+$fondsPropPositifs = 0;
+
+// L10
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '13%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $subventions = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $subventions;
+} catch (PDOException $e) { $subventions = 0; }
+// L20
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '14%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $fondsAffectes = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $fondsAffectes;
+} catch (PDOException $e) { $fondsAffectes = 0; }
+// L27
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '15%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $fondsCredit = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $fondsCredit;
+} catch (PDOException $e) { $fondsCredit = 0; }
+// L30
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '17%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $provisionsRisques = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $provisionsRisques;
+} catch (PDOException $e) { $provisionsRisques = 0; }
+// L35
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '18%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $provisionsReglementees = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $provisionsReglementees;
+} catch (PDOException $e) { $provisionsReglementees = 0; }
+// L41
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '16%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $empruntsSubordonnes = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $empruntsSubordonnes;
+} catch (PDOException $e) { $empruntsSubordonnes = 0; }
+// L45
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '19%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $fondsRisques = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $fondsRisques;
+} catch (PDOException $e) { $fondsRisques = 0; }
+// L50
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '102%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $primesCapital = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $primesCapital;
+} catch (PDOException $e) { $primesCapital = 0; }
+// L55
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '106%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $reserves = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $reserves;
+} catch (PDOException $e) { $reserves = 0; }
+// L59
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '107%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $ecartReeval = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $ecartReeval;
+} catch (PDOException $e) { $ecartReeval = 0; }
+// L60
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '101%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $capital = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $capital;
+} catch (PDOException $e) {
+    try { $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant),0) as total FROM capital WHERE statut='valide' AND date_creation <= :date_fin"); $stmt->execute([':date_fin'=>$date_fin_periode]); $capital = (float)$stmt->fetch()['total']; $fondsPropPositifs += $capital; } catch (PDOException $e2) { $capital = 0; }
+}
+// L65
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '103%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $fondsDotation = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $fondsDotation;
+} catch (PDOException $e) { $fondsDotation = 0; }
+// L70 (report positif)
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(CASE WHEN (montant_credit - montant_debit) > 0 THEN montant_credit - montant_debit ELSE 0 END),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '11%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $reportPositif = (float)$stmt->fetch()['solde']; $fondsPropPositifs += $reportPositif;
+} catch (PDOException $e) { $reportPositif = 0; }
+// L75 (compte 120)
+$excedentProduits = 0;
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_credit - montant_debit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte = '120' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $excedentProduits = (float)$stmt->fetch()['solde']; if ($excedentProduits > 0) $fondsPropPositifs += $excedentProduits;
+} catch (PDOException $e) {}
+// L80 (bénéfice de l'exercice)
+$resultatExercice = 0;
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(CASE WHEN pc.classe_compte='7' THEN montant_credit - montant_debit ELSE 0 END),0) as produits, COALESCE(SUM(CASE WHEN pc.classe_compte='6' THEN montant_debit - montant_credit ELSE 0 END),0) as charges FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.classe_compte IN ('6','7') AND e.date_ecriture BETWEEN :debut AND :fin");
+    $stmt->execute([':debut'=>$date_debut_exercice, ':fin'=>$date_fin_exercice]); $res = $stmt->fetch(); $resultatBrut = $res['produits'] - $res['charges']; if ($resultatBrut > 0) { $resultatExercice = (float)$resultatBrut; $fondsPropPositifs += $resultatExercice; }
+} catch (PDOException $e) { $resultatBrut = 0; }
+
+// Déductions
+$fondsPropDeductions = 0;
+$capitalNonAppele = 0;
+$excedentCharges = 0;
+$immobilisationsIncorp = 0;
+$reportNegatif = 0;
+$participationsSFD_fp = 0;
+
+// L62 capital non appelé
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_debit - montant_credit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte = '109' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $capitalNonAppele = abs((float)$stmt->fetch()['solde']); $fondsPropDeductions += $capitalNonAppele;
+} catch (PDOException $e) {}
+// E05
+if (isset($resultatBrut) && $resultatBrut < 0) { $excedentCharges = abs($resultatBrut); $fondsPropDeductions += $excedentCharges; }
+// Immobilisations incorporelles nettes
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_achat - amortissement_total),0) as valeur_nette FROM immobilisations WHERE type_immobilisation='Immobilisations incorporelles' AND statut='actif' AND date_achat <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $immobilisationsIncorp = (float)$stmt->fetch()['valeur_nette']; $fondsPropDeductions += $immobilisationsIncorp;
+} catch (PDOException $e) {}
+// Report négatif
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(CASE WHEN (montant_credit - montant_debit) < 0 THEN ABS(montant_credit - montant_debit) ELSE 0 END),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '11%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $reportNegatif = (float)$stmt->fetch()['solde']; $fondsPropDeductions += $reportNegatif;
+} catch (PDOException $e) {}
+// Z52 (saisie manuelle)
+$fondsPropDeductions += $provisionsNonConst;
+// Z53 (participations dans d'autres SFD) – déjà déduites du numérateur, mais on les déduit aussi des fonds propres
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_debit - montant_credit),0) as solde FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '261%' AND e.date_ecriture <= :date_fin");
+    $stmt->execute([':date_fin'=>$date_fin_periode]); $participationsSFD_fp = (float)$stmt->fetch()['solde']; $fondsPropDeductions += $participationsSFD_fp;
+} catch (PDOException $e) {}
+
+$fondsPropres = $fondsPropPositifs - $fondsPropDeductions;
+if ($fondsPropres < 0) $fondsPropres = 0;
+if ($fondsPropres <= 0) $fondsPropres = 1;
+
+// ------------------------- RATIO R09 -------------------------
+$ratioR09 = $titresParticipationNets / $fondsPropres;
+$pourcentage = $ratioR09 * 100;
+$normeMin = 0;
+$normeMax = 0.25;
+$conformite = ($ratioR09 >= $normeMin && $ratioR09 <= $normeMax) ? 'CONFORME' : 'NON_CONFORME';
+
+// Détails pour l'affichage
+$lignesParticipations = [
+    ['code'=>'D1E','lib'=>'Titres de participation (comptes 26)','montant'=>$titresParticipation],
+    ['code'=>'','lib'=>'Participations dans établissements de crédit/SFD (à déduire)','montant'=>$participationsSFD],
+];
+$lignesPositifs = [
+    ['code'=>'L10','lib'=>'Subventions d\'investissement','montant'=>$subventions],
+    ['code'=>'L20','lib'=>'Fonds affectés','montant'=>$fondsAffectes],
+    ['code'=>'L27','lib'=>'Fonds de crédit','montant'=>$fondsCredit],
+    ['code'=>'L30','lib'=>'Provisions pour risques et charges','montant'=>$provisionsRisques],
+    ['code'=>'L35','lib'=>'Provisions réglementées','montant'=>$provisionsReglementees],
+    ['code'=>'L41','lib'=>'Emprunts et titres émis subordonnés','montant'=>$empruntsSubordonnes],
+    ['code'=>'L45','lib'=>'Fonds pour risques financiers généraux','montant'=>$fondsRisques],
+    ['code'=>'L50','lib'=>'Primes liées au capital','montant'=>$primesCapital],
+    ['code'=>'L55','lib'=>'Réserves','montant'=>$reserves],
+    ['code'=>'L59','lib'=>'Écart de réévaluation des immobilisations','montant'=>$ecartReeval],
+    ['code'=>'L60','lib'=>'Capital','montant'=>$capital],
+    ['code'=>'L65','lib'=>'Fonds de dotation','montant'=>$fondsDotation],
+    ['code'=>'L70','lib'=>'Report à nouveau positif','montant'=>$reportPositif],
+    ['code'=>'L75','lib'=>'Excédent des produits sur les charges','montant'=>$excedentProduits>0?$excedentProduits:0],
+    ['code'=>'L80','lib'=>'Résultat excédentaire de l\'exercice','montant'=>$resultatExercice],
+];
+$lignesDeductions = [
+    ['code'=>'L62','lib'=>'Capital non appelé','montant'=>$capitalNonAppele],
+    ['code'=>'E05','lib'=>'Excédent des charges sur les produits','montant'=>$excedentCharges],
+    ['code'=>'D24/31/41/46','lib'=>'Immobilisations incorporelles nettes','montant'=>$immobilisationsIncorp],
+    ['code'=>'L70','lib'=>'Report à nouveau négatif','montant'=>$reportNegatif],
+    ['code'=>'Z52','lib'=>'Complément de provisions non constituées','montant'=>$provisionsNonConst],
+    ['code'=>'Z53','lib'=>'Participations dans d\'autres SFD','montant'=>$participationsSFD_fp],
+];
+
+// ------------------------- EXPORT PDF AVEC PDF_DIMF (via POST) -------------------------
+if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
+
+    class PDF_DIMF extends FPDF {
+        public $codeDimf  = 'R09';
+        public $titreDimf = 'LIMITATION DES PRISES DE PARTICIPATION';
+        public $nomSfd    = 'SFD';
+        public $periode   = '';
+        public $exercice  = '';
+
+        static function u($str) {
+            return iconv('UTF-8', 'ISO-8859-1//TRANSLIT', $str);
+        }
+
+        function Header() {
+            $this->SetFillColor(156, 163, 175);
+            $this->Rect(0, 0, $this->GetPageWidth(), 28, 'F');
+            $this->SetFont('Arial', '', 7);
+            $this->SetTextColor(255, 255, 255);
+            $this->SetXY(8, 3);
+            $this->Cell(0, 4, self::u('République de Côte d\'Ivoire  •  Ministère de l\'Economie et des Finances  -  DGTCP / DSFD'), 0, 1, 'L');
+            $this->SetFont('Arial', 'B', 13);
+            $this->SetTextColor(255, 255, 255);
+            $this->SetX(8);
+            $this->Cell(0, 7, self::u($this->codeDimf . '  -  ' . $this->titreDimf), 0, 1, 'L');
+            $this->SetFont('Arial', '', 8);
+            $this->SetTextColor(255, 255, 255);
+            $this->SetX(8);
+            $this->Cell(0, 5, self::u(
+                'SFD : ' . $this->nomSfd .
+                '   |   Période : ' . $this->periode .
+                '   |   Exercice : ' . $this->exercice .
+                '   |   Arrêté au : ' . date('d/m/Y', strtotime($GLOBALS['date_fin_periode']))
+            ), 0, 1, 'L');
+            $this->SetTextColor(0, 0, 0);
+            $this->Ln(4);
+        }
+
+        function Footer() {
+            $this->SetY(-12);
+            $this->SetFont('Arial', 'I', 7);
+            $this->SetTextColor(100, 116, 139);
+            $this->Cell(0, 4, self::u(
+                'SICS-BCEAO  •  Généré le ' . date('d/m/Y H:i:s') .
+                '  •  Page ' . $this->PageNo() . '/{nb}'),
+                0, 0, 'C');
+        }
+
+        function SectionTitle($label) {
+            $this->SetFont('Arial', 'B', 9);
+            $this->SetFillColor(0, 0, 0);
+            $this->SetTextColor(255, 255, 255);
+            $this->Cell(0, 7, self::u('  ' . strtoupper($label)), 0, 1, 'L', true);
+            $this->SetTextColor(0, 0, 0);
+            $this->Ln(1);
+        }
+
+        function TableHeader($cols) {
+            $this->SetFont('Arial', 'B', 8);
+            $this->SetFillColor(248, 250, 252);
+            $this->SetTextColor(30, 41, 59);
+            $this->SetDrawColor(226, 232, 240);
+            $this->SetLineWidth(0.2);
+            foreach ($cols as $col) {
+                $align = isset($col['align']) ? $col['align'] : 'L';
+                $this->Cell($col['w'], 6, self::u($col['label']), 1, 0, $align, true);
+            }
+            $this->Ln();
+        }
+
+        function TableRow($cols, $data, $style = '') {
+            switch ($style) {
+                case 'subtotal':
+                    $this->SetFillColor(248, 250, 252);
+                    $this->SetFont('Arial', 'B', 8);
+                    $fill = true; break;
+                case 'total':
+                    $this->SetFillColor(240, 253, 244);
+                    $this->SetFont('Arial', 'B', 8.5);
+                    $fill = true; break;
+                default:
+                    $this->SetFillColor(255, 255, 255);
+                    $this->SetFont('Arial', '', 7.5);
+                    $fill = false; break;
+            }
+            $this->SetTextColor(15, 23, 42);
+            $this->SetDrawColor(226, 232, 240);
+            $this->SetLineWidth(0.1);
+            foreach ($cols as $i => $col) {
+                $val   = isset($data[$i]) ? $data[$i] : '';
+                $align = isset($col['align']) ? $col['align'] : 'L';
+                $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
+            }
+            $this->Ln();
+        }
+
+        static function montant($val) {
+            return number_format((float)$val, 0, ',', ' ') . ' F';
+        }
+    }
+
+    $pdf = new PDF_DIMF();
+    $pdf->AliasNbPages();
+    $pdf->codeDimf  = 'R09';
+    $pdf->titreDimf = 'LIMITATION DES PRISES DE PARTICIPATION';
+    $pdf->nomSfd    = 'SFD';
+    $pdf->periode   = ucfirst($type_periode);
+    $pdf->exercice  = $exercice;
+    $pdf->AddPage();
+
+    $cols = [
+        ['w' => 30, 'label' => 'Code', 'align' => 'L'],
+        ['w' => 100, 'label' => 'Libellé', 'align' => 'L'],
+        ['w' => 50, 'label' => 'Montant (FCFA)', 'align' => 'R']
+    ];
+
+    // Section A
+    $pdf->SectionTitle("A - TITRES DE PARTICIPATION");
+    $pdf->TableHeader($cols);
+    foreach ($lignesParticipations as $r) {
+        $pdf->TableRow($cols, [$r['code'], $r['lib'], PDF_DIMF::montant($r['montant'])]);
+    }
+    $pdf->TableRow($cols, ['', 'TITRES DE PARTICIPATION NETS (A)', PDF_DIMF::montant($titresParticipationNets)], 'total');
+
+    $pdf->Ln(5);
+
+    // Section B – Fonds propres (positifs puis déductions)
+    $pdf->SectionTitle("B - FONDS PROPRES");
+    $pdf->TableHeader($cols);
+    foreach ($lignesPositifs as $r) {
+        $pdf->TableRow($cols, [$r['code'], $r['lib'], PDF_DIMF::montant($r['montant'])]);
+    }
+    $pdf->TableRow($cols, ['', 'TOTAL ÉLÉMENTS POSITIFS', PDF_DIMF::montant($fondsPropPositifs)], 'subtotal');
+    foreach ($lignesDeductions as $r) {
+        $pdf->TableRow($cols, [$r['code'], $r['lib'], PDF_DIMF::montant($r['montant'])]);
+    }
+    $pdf->TableRow($cols, ['', 'TOTAL DÉDUCTIONS', PDF_DIMF::montant($fondsPropDeductions)], 'subtotal');
+    $pdf->TableRow($cols, ['', 'FONDS PROPRES (B)', PDF_DIMF::montant($fondsPropres)], 'total');
+
+    $pdf->Ln(5);
+    $pdf->SetFont('Arial', 'B', 10);
+    $pdf->Cell(0, 7, PDF_DIMF::u("RATIO R09 = A / B = " . number_format($pourcentage, 2) . "%"), 0, 1);
+    $pdf->SetFont('Arial', '', 9);
+    $pdf->MultiCell(0, 5, PDF_DIMF::u("Norme BCEAO : 0% ≤ Ratio ≤ 25%\nConformité : " . $conformite));
+
+    $pdf->Output('I', 'R09_' . $exercice . '_' . $type_periode . '.pdf');
+    exit;
+}
+
+// ------------------------- EXPORT EXCEL (HTML .xls) VIA POST -------------------------
+if (isset($_POST['export']) && $_POST['export'] === 'excel') {
+    header('Content-Type: application/vnd.ms-excel');
+    header('Content-Disposition: attachment; filename="R09_' . $exercice . '_' . $type_periode . '.xls"');
+    header('Cache-Control: max-age=0');
+    echo '<html><head><meta charset="UTF-8"><style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h2 { color: #1a3a5c; font-size: 16pt; }
+        h3 { color: #1a3a5c; font-size: 14pt; margin-top: 20px; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 10pt; }
+        th, td { border: 1px solid #999; padding: 8px; vertical-align: top; }
+        th { background: #f2f2f2; text-align: center; font-weight: bold; }
+        .text-right { text-align: right; }
+        .total-row { background: #e8f5e9; font-weight: bold; }
+        .subtotal-row { background: #f0f7ff; font-weight: bold; }
+        .col-code { width: 15%; }
+        .col-libelle { width: 70%; }
+        .col-montant { width: 15%; }
+    </style></head><body>';
+    echo '<h2>R09 - LIMITATION DES PRISES DE PARTICIPATION</h2>';
+    echo '<p><strong>Période :</strong> ' . $exercice . ' - ' . ucfirst($type_periode) . ' (arrêtée au ' . date('d/m/Y', strtotime($date_fin_periode)) . ')</p>';
+
+    // Tableau A
+    echo '<h3>A - TITRES DE PARTICIPATION</h3>';
+    echo '<td>';
+    echo '<tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant (FCFA)</th></tr>';
+    foreach ($lignesParticipations as $r) {
+        echo '<tr><td class="col-code">' . $r['code'] . '</td><td class="col-libelle">' . $r['lib'] . '</td><td class="col-montant text-right">' . number_format($r['montant'], 0, ',', ' ') . '</td></tr>';
+    }
+    echo '<tr class="total-row"><td colspan="2">TITRES DE PARTICIPATION NETS (A)</td><td class="text-right">' . number_format($titresParticipationNets, 0, ',', ' ') . '</td></tr>';
+    echo '</table>';
+
+    // Tableau B – Fonds propres
+    echo '<h3>B - FONDS PROPRES</h3>';
+    echo '<tr>';
+    echo '<tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant (FCFA)</th></tr>';
+    foreach ($lignesPositifs as $r) {
+        echo '<tr><td class="col-code">' . $r['code'] . '</td><td class="col-libelle">' . $r['lib'] . '<tr><td class="col-montant text-right">' . number_format($r['montant'], 0, ',', ' ') . '<tr></tr>';
+    }
+    echo '<tr class="subtotal-row"><td colspan="2">TOTAL ÉLÉMENTS POSITIFS</td><td class="text-right">' . number_format($fondsPropPositifs, 0, ',', ' ') . '</td></tr>';
+    foreach ($lignesDeductions as $r) {
+        echo '<tr><td class="col-code">' . $r['code'] . '</td><td class="col-libelle">' . $r['lib'] . '</td><td class="col-montant text-right">' . number_format($r['montant'], 0, ',', ' ') . '</td></tr>';
+    }
+    echo '<tr class="subtotal-row"><td colspan="2">TOTAL DÉDUCTIONS</td><td class="text-right">' . number_format($fondsPropDeductions, 0, ',', ' ') . '</td></tr>';
+    echo '<tr class="total-row"><td colspan="2">FONDS PROPRES (B)</td><td class="text-right">' . number_format($fondsPropres, 0, ',', ' ') . '</td></tr>';
+    echo '</table>';
+
+    echo '<p><strong>RATIO R09 = A / B = ' . number_format($pourcentage, 2) . '%</strong></p>';
+    echo '<p>Norme BCEAO : 0% à 25%<br>Conformité : ' . $conformite . '</p>';
+    echo '</body></html>';
+    exit;
+}
+
+// ------------------------- AFFICHAGE WEB (INTERFACE DIMF_2000 AVEC BOOTSTRAP 5, DESIGN CONSERVÉ) -------------------------
+?>
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>R09 - Limitation des prises de participation (BCEAO)</title>
+    <!-- Bootstrap 5 CSS (intégré sans modification du design) -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Styles personnalisés inchangés (conservent le design original) -->
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Inter',system-ui,sans-serif; background:#f1f5f9; padding:24px; }
+        .dashboard { max-width:1400px; margin:0 auto; }
+        .page-header { background:linear-gradient(135deg,#3b82f6,#60a5fa); border-radius:24px; padding:20px 28px; margin-bottom:24px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; }
+        .header-left h1 { font-size:1.6rem; font-weight:600; color:white; display:flex; align-items:center; gap:10px; }
+        .subtitle { font-size:0.8rem; color:#e0f2fe; }
+        .badge { background:#2563eb; color:white; padding:4px 12px; border-radius:30px; display:inline-block; margin-top:8px; }
+        .btn-group { display:flex; gap:12px; }
+        .btn-excel, .btn-pdf { padding:8px 20px; border-radius:40px; font-weight:500; border:none; cursor:pointer; }
+        .btn-excel { background:#10b981; color:white; }
+        .btn-pdf { background:#ef4444; color:white; }
+        .card { background:white; border-radius:20px; padding:20px 24px; margin-bottom:24px; box-shadow:0 1px 3px rgba(0,0,0,0.05); }
+        .card-header { display:flex; align-items:center; gap:10px; border-bottom:1px solid #eef2f6; padding-bottom:12px; margin-bottom:16px; font-weight:600; color:#1e40af; }
+        .filters-row { display:flex; flex-wrap:wrap; align-items:flex-end; gap:20px; }
+        .filter-item { display:flex; flex-direction:column; gap:6px; }
+        .filter-item label { font-size:0.7rem; font-weight:600; text-transform:uppercase; color:#4b5563; }
+        .filter-item select, .filter-item input { padding:8px 14px; border:1px solid #d1d5db; border-radius:12px; }
+        .btn-apply { background:#3b82f6; color:white; border:none; border-radius:40px; padding:8px 24px; cursor:pointer; }
+        .ratio-card { background:linear-gradient(145deg,#f8fafc,#fff); border-radius:20px; padding:24px; margin-bottom:24px; border:1px solid #e2e8f0; }
+        .ratio-value { font-size:3rem; font-weight:800; }
+        .ratio-value.conforme { color:#10b981; }
+        .ratio-value.non-conforme { color:#ef4444; }
+        .norme-box { background:#f1f5f9; border-radius:16px; padding:12px 20px; text-align:center; }
+        .progress-bar { background:#e2e8f0; border-radius:50px; height:24px; overflow:hidden; margin-top:20px; }
+        .progress-fill { background:linear-gradient(90deg,#3b82f6,#60a5fa); height:100%; border-radius:50px; text-align:center; color:white; font-size:0.75rem; line-height:24px; }
+        .progress-fill.non-conforme { background:linear-gradient(90deg,#ef4444,#f97316); }
+        .table-wrapper { overflow-x:auto; }
+        table { width:100%; border-collapse:collapse; }
+        th, td { padding:12px 16px; text-align:left; border-bottom:1px solid #f1f5f9; }
+        th { background:#f8fafc; font-weight:600; }
+        .text-right { text-align:right; }
+        .total-row { background:#f0fdf4; font-weight:700; }
+        .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px; border-radius:16px; display:flex; align-items:center; gap:14px; }
+        .two-columns { display:flex; gap:24px; flex-wrap:wrap; }
+        .two-columns .card { flex:1; min-width:320px; }
+        .page-footer { text-align:center; font-size:0.75rem; color:#6b7280; margin-top:16px; }
+        @media print { .btn-group, .filters-row, #filtersCard { display:none; } }
+        .col-code { width: 15%; }
+        .col-libelle { width: 70%; }
+        .col-montant { width: 15%; }
+    </style>
+</head>
+<body>
+<div class="dashboard">
+    <div class="page-header">
+        <div class="header-left">
+            <h1><i class="fas fa-chart-pie"></i> R09 - LIMITATION DES PRISES DE PARTICIPATION</h1>
+            <div class="subtitle">République de Côte d'Ivoire / DGTCP / DSFD</div>
+            <div class="badge">Norme BCEAO : 0% ≤ Ratio ≤ 25%</div>
+        </div>
+        <div class="btn-group">
+            <!-- Boutons export en POST (via formulaire dynamique JS) -->
+            <button class="btn-excel" onclick="submitExport('excel')"><i class="fas fa-file-excel"></i> Excel</button>
+            <button class="btn-pdf" onclick="submitExport('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
+        </div>
+    </div>
+
+    <!-- Formulaire de filtres en POST (remplace l'ancien système GET) -->
+    <div class="card" id="filtersCard">
+        <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres de période</div>
+        <form method="post" id="filterForm">
+            <div class="filters-row">
+                <div class="filter-item">
+                    <label>Année</label>
+                    <select name="exercice" id="exerciceSelect">
+                        <?php for($y=2020;$y<=date('Y')+1;$y++): ?>
+                            <option value="<?=$y?>" <?=$y==$exercice?'selected':''?>><?=$y?></option>
+                        <?php endfor; ?>
+                    </select>
+                </div>
+                <div class="filter-item">
+                    <label>Type de période</label>
+                    <select name="type_periode" id="typePeriodeSelect">
+                        <option value="mensuel" <?=$type_periode=='mensuel'?'selected':''?>>Mensuel</option>
+                        <option value="trimestre" <?=$type_periode=='trimestre'?'selected':''?>>Trimestre</option>
+                        <option value="semestre" <?=$type_periode=='semestre'?'selected':''?>>Semestre</option>
+                        <option value="annuel" <?=$type_periode=='annuel'?'selected':''?>>Annuel</option>
+                    </select>
+                </div>
+                <div class="filter-item" id="dynamicSelectContainer">
+                    <!-- Contenu dynamique généré par JS, les noms des champs sont 'mois', 'trimestre' ou 'semestre' -->
+                </div>
+                <button type="submit" class="btn-apply">Appliquer</button>
+            </div>
+            <!-- Saisie manuelle pour Z52 (intégrée au formulaire principal) -->
+            <div style="margin-top:12px; padding:8px; background:#fefce8; border-radius:12px;">
+                <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
+                    <div class="filter-item">
+                        <label>Z52 - Provisions non constituées</label>
+                        <input type="number" name="provisions_non_const" value="<?=$provisionsNonConst?>" step="1000" style="width:180px;">
+                    </div>
+                    <div style="font-size:0.7rem; color:#6b7280; margin-bottom:8px;">Provisions supplémentaires exigées par le superviseur (BCEAO).</div>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- Carte ratio -->
+    <div class="ratio-card">
+        <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:20px;">
+            <div><div class="card-header" style="padding:0;">Ratio R09 – Prises de participation</div><div class="ratio-value <?=$conformite=='CONFORME'?'conforme':'non-conforme'?>"><?=number_format($pourcentage,2)?>%</div><div>Titres de participation nets / Fonds propres</div></div>
+            <div class="norme-box"><div><strong>Norme BCEAO</strong></div><div style="font-size:1.5rem;">0% → 25%</div><div>Seuil maximal : 25%</div></div>
+            <div><span class="badge" style="background:<?=$conformite=='CONFORME'?'#10b981':'#ef4444'?>;"><?=$conformite?></span></div>
+        </div>
+        <div class="progress-bar"><div class="progress-fill <?=$conformite!='CONFORME'?'non-conforme':''?>" style="width:<?=min($pourcentage,100)?>%;"><?=number_format($pourcentage,1)?>%</div></div>
+        <div style="margin-top:16px;"><i class="fas fa-calculator"></i> R09 = <?=number_format($titresParticipationNets,0,',',' ')?> / <?=number_format($fondsPropres,0,',',' ')?> = <?=number_format($pourcentage,2)?>%</div>
+    </div>
+
+    <!-- Deux colonnes web -->
+    <div class="two-columns">
+        <div class="card">
+            <div class="card-header"><i class="fas fa-chart-simple"></i> A – TITRES DE PARTICIPATION</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant</th></tr></thead>
+                    <tbody>
+                        <?php foreach($lignesParticipations as $r): ?>
+                        <tr><td class="col-code"><?=$r['code']?></td><td class="col-libelle"><?=$r['lib']?></td><td class="col-montant text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="total-row"><td colspan="2">TITRES DE PARTICIPATION NETS (A)</td><td class="text-right"><?=number_format($titresParticipationNets,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><i class="fas fa-landmark"></i> B – FONDS PROPRES</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant</th></tr></thead>
+                    <tbody>
+                        <?php foreach($lignesPositifs as $r): ?>
+                        <tr><td class="col-code"><?=$r['code']?></td><td class="col-libelle"><?=$r['lib']?></td><td class="col-montant text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="total-row"><td colspan="2">FONDS PROPRES (B)</td><td class="text-right"><?=number_format($fondsPropres,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Interprétation -->
+    <div class="card"><div class="card-header">Interprétation</div><div class="info-box"><i class="fas fa-gavel"></i><div><?=($conformite=='CONFORME')?'✓ Conforme – Les prises de participation représentent '.number_format($pourcentage,2).'% des fonds propres, ≤25%.':'⚠️ Non conforme – Les prises de participation dépassent 25% des fonds propres.'?></div></div></div>
+
+    <div class="page-footer"><i class="fas fa-calendar-alt"></i> Généré le <?=date('d/m/Y à H:i:s')?> – Période <?=$exercice?> (<?=ucfirst($type_periode)?>) arrêtée au <?=date('d/m/Y',strtotime($date_fin_periode))?></div>
+</div>
+
+<!-- Scripts : Bootstrap 5 JS + gestion POST -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    // Remplissage dynamique du select (mois, trimestre, semestre) avec conservation des valeurs POST
+    function updateDynamicSelect() {
+        const type = document.getElementById('typePeriodeSelect').value;
+        const container = document.getElementById('dynamicSelectContainer');
+        const currentMois = <?=$mois?>;
+        const currentTrimestre = <?=$trimestre?>;
+        const currentSemestre = <?=json_encode($semestre)?>;
+        let html = '';
+        if (type === 'mensuel') {
+            html = '<label>Mois</label><select name="mois" id="moisSelect" class="form-select">';
+            for (let m = 1; m <= 12; m++) {
+                let selected = (m === currentMois) ? 'selected' : '';
+                html += `<option value="${m}" ${selected}>${String(m).padStart(2,'0')} - ${new Date(2000,m-1,1).toLocaleString('fr',{month:'long'})}</option>`;
+            }
+            html += '</select>';
+        } else if (type === 'trimestre') {
+            html = '<label>Trimestre</label><select name="trimestre" id="trimestreSelect" class="form-select">';
+            for (let t = 1; t <= 4; t++) {
+                let selected = (t === currentTrimestre) ? 'selected' : '';
+                html += `<option value="${t}" ${selected}>${t}${t===1?'er':'ème'} Trimestre</option>`;
+            }
+            html += '</select>';
+        } else if (type === 'semestre') {
+            html = '<label>Semestre</label><select name="semestre" id="semestreSelect" class="form-select">';
+            for (let s = 1; s <= 2; s++) {
+                let selected = (s === currentSemestre) ? 'selected' : '';
+                html += `<option value="${s}" ${selected}>${s}${s===1?'er':'e'} semestre</option>`;
+            }
+            html += '</select>';
+        } else {
+            html = '<label>Période</label><input type="text" class="form-control" disabled value="Année complète">';
+        }
+        container.innerHTML = html;
+    }
+
+    // Soumission des exports en POST (réutilisation des valeurs du formulaire principal)
+    function submitExport(type) {
+        const form = document.getElementById('filterForm');
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'export';
+        input.value = type;
+        form.appendChild(input);
+        form.submit();
+        form.removeChild(input);
+    }
+
+    // Écouteur pour changement de type période
+    document.addEventListener('DOMContentLoaded', function() {
+        updateDynamicSelect();
+        document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect);
+    });
+</script>
+</body>
+</html>
