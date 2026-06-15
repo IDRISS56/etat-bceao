@@ -4,20 +4,10 @@
 
 session_start();
 
-// Configuration BDD
-$host = 'localhost';
-$dbname = 'microfinances_dg';
-$username = 'root';
-$password = '';
-
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    die("Erreur de connexion : " . $e->getMessage());
-}
-
+// ============================================================
+// CONFIGURATION BDD
+// ============================================================
+require_once '../../databases/database.php';
 // ============================================================
 // PARAMÈTRES AVEC TYPES DE PÉRIODE
 // ============================================================
@@ -339,9 +329,9 @@ if ($format === 'pdf') {
             $this->SetFont('Arial', '', 8);
             $this->SetTextColor(255, 255, 255);
             $this->SetX(8);
-            $this->Cell(0, 5, $this->convert('SFD : ' . $this->nomSfd . '   |   Periode : ' . $this->periode . '   |   Exercice : ' . $this->exercice), 0, 1, 'L');
+            $this->Cell(0, 5, $this->convert('SFD : ' . $this->nomSfd . '   |   Periode : ' . $this->periode . '   |   Exercice : ' . $this->exercice), 0, 1, 'C');
             $this->SetTextColor(0, 0, 0);
-            $this->Ln(4);
+            $this->Ln(10);
         }
 
         function Footer() {
@@ -355,9 +345,9 @@ if ($format === 'pdf') {
             $this->SetFont('Arial', 'B', 9);
             $this->SetFillColor(0, 0, 0);
             $this->SetTextColor(255, 255, 255);
-            $this->Cell(0, 7, $this->convert('  ' . strtoupper($label)), 0, 1, 'L', true);
+            $this->Cell(0, 7, $this->convert('  ' . strtoupper($label)), 0, 1, 'C', true);
             $this->SetTextColor(0, 0, 0);
-            $this->Ln(1);
+            $this->Ln(2);
         }
 
         function TableHeader($cols) {
@@ -366,7 +356,7 @@ if ($format === 'pdf') {
             $this->SetTextColor(30, 41, 59);
             $this->SetDrawColor(226, 232, 240);
             foreach ($cols as $col) {
-                $align = isset($col['align']) ? $col['align'] : 'L';
+                $align = isset($col['align']) ? $col['align'] : 'C';
                 $this->Cell($col['w'], 6, $this->convert($col['label']), 1, 0, $align, true);
             }
             $this->Ln();
@@ -390,7 +380,7 @@ if ($format === 'pdf') {
             $this->SetDrawColor(226, 232, 240);
             foreach ($cols as $i => $col) {
                 $val = isset($data[$i]) ? $data[$i] : '';
-                $align = isset($col['align']) ? $col['align'] : 'L';
+                $align = isset($col['align']) ? $col['align'] : 'C';
                 $this->Cell($col['w'], 5.5, $this->convert($val), 1, 0, $align, $fill);
             }
             $this->Ln();
@@ -686,7 +676,7 @@ if ($format === 'pdf') {
             <div class="card-header"><i class="fas fa-arrow-up"></i> PRODUITS CONSOLIDES</div>
             <div class="card-body">
                 <div class="table-wrapper">
-                    </table>
+                    <table>
                         <thead>
                             <tr><th>CODE</th><th>LIBELLE</th><th class="text-right">Montant (FCFA)</th></tr>
                         </thead>

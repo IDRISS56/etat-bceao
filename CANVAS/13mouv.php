@@ -5,18 +5,7 @@
 session_start();
 
 // Configuration BDD
-$host = 'localhost';
-$dbname = 'microfinances_dg';
-$username = 'root';
-$password = '';
-
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    die("Erreur de connexion : " . $e->getMessage());
-}
+require_once('../databases/database.php');
 
 // ============================================================
 // PARAMÈTRES
@@ -212,14 +201,17 @@ if ($format === 'pdf') {
         
         function SectionTitle($label) {
             $this->SetFont('Arial', 'B', 10);
-            $this->SetFillColor(200, 220, 255);
+            $this->SetFillColor(0, 0, 0);
+            $this->SetTextColor(255, 255, 255);
             $this->Cell(0, 8, $this->convert($label), 0, 1, 'L', true);
+            $this->SetTextColor(0, 0, 0);
             $this->Ln(2);
         }
         
         function TableHeader($cols) {
             $this->SetFont('Arial', 'B', 8);
             $this->SetFillColor(240, 240, 240);
+            $this->SetTextColor(0, 0, 0);
             foreach ($cols as $col) {
                 $this->Cell($col['w'], 7, $this->convert($col['label']), 1, 0, $col['align'] ?? 'L', true);
             }
@@ -230,6 +222,7 @@ if ($format === 'pdf') {
             if ($style == 'total') {
                 $this->SetFont('Arial', 'B', 8);
                 $this->SetFillColor(240, 253, 244);
+            $this->SetTextColor(0, 0, 0);
                 $fill = true;
             } else {
                 $this->SetFont('Arial', '', 8);

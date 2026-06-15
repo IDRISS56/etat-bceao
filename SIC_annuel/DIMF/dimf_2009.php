@@ -2,6 +2,11 @@
 // DIMF_2009.php - Détail du compte 6221 (Personnel extérieur) avec FPDF
 session_start();
 
+// ============================================================
+// CONFIGURATION BDD
+// ============================================================
+require_once '../../databases/database.php';
+
 require_once '../../fpdf/fpdf.php';
 
 class PDF_DIMF extends FPDF {
@@ -90,20 +95,6 @@ class PDF_DIMF extends FPDF {
     }
 }
 
-// ============================================================
-// CONNEXION BDD
-// ============================================================
-$host = 'localhost';
-$dbname = 'microfinances_dg';
-$username = 'root';
-$password = '';
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch(PDOException $e) {
-    die("Erreur de connexion : " . $e->getMessage());
-}
 
 // ============================================================
 // PARAMÈTRES DE PÉRIODE

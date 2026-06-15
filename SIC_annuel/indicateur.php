@@ -5,18 +5,7 @@
 session_start();
 
 // Configuration BDD
-$host = 'localhost';
-$dbname = 'microfinances_dg';
-$username = 'root';
-$password = '';
-
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    die("Erreur de connexion : " . $e->getMessage());
-}
+require_once '../databases/database.php';
 
 // ============================================================
 // PARAMÈTRES AVEC TYPES DE PÉRIODE
@@ -391,7 +380,7 @@ if ($format === 'pdf') {
             $this->SetX(8);
             $this->Cell(0, 5, $this->convert('Indicateurs de performance - Article 44'), 0, 1, 'L');
             $this->SetTextColor(0, 0, 0);
-            $this->Ln(4);
+            $this->Ln(10);
         }
         
         function Footer() {
@@ -403,29 +392,30 @@ if ($format === 'pdf') {
         
         function SectionTitle($label) {
             $this->SetFont('Arial', 'B', 10);
-            $this->SetFillColor(200, 220, 255);
+            $this->SetTextColor(255, 255, 255);
+            $this->SetFillColor(0, 0, 0);
             $this->Cell(0, 8, $this->convert($label), 0, 1, 'L', true);
             $this->Ln(2);
         }
         
         function IndicatorCard($title, $value, $norme, $class, $details = '') {
             $this->SetFont('Arial', 'B', 9);
-            $this->Cell(80, 7, $this->convert($title), 0, 0);
+            $this->Cell(80, 7, $this->convert($title), 1, 0);
             $this->SetFont('Arial', '', 9);
             if ($class == 'conforme') {
                 $this->SetTextColor(22, 163, 74);
             } else {
                 $this->SetTextColor(220, 38, 38);
             }
-            $this->Cell(60, 7, $this->convert($value), 0, 0);
+            $this->Cell(60, 7, $this->convert($value), 1, 0);
             $this->SetTextColor(0, 0, 0);
             $this->SetFont('Arial', 'I', 8);
-            $this->Cell(0, 7, $this->convert($norme), 0, 1);
+            $this->Cell(0, 7, $this->convert($norme), 1, 1);
             if ($details) {
                 $this->SetFont('Arial', '', 7);
-                $this->Cell(0, 5, $this->convert($details), 0, 1);
+                $this->Cell(0, 5, $this->convert($details), 1, 1);
             }
-            $this->Ln(2);
+            // $this->Ln(2);
         }
         
         function montant($val) {
@@ -539,7 +529,7 @@ if ($format === 'pdf') {
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background: #f1f5f9; padding: 24px; }
-        .dashboard { max-width: 1200px; margin: 0 auto; }
+        .dashboard { max-width: 1400px; margin: 0 auto; }
         
         .page-header { background: linear-gradient(135deg, #3b82f6, #60a5fa); border-radius: 24px; padding: 20px 28px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; box-shadow: 0 4px 6px -2px rgba(0,0,0,0.05); }
         .header-left h1 { font-size: 1.6rem; font-weight: 600; color: white; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; }

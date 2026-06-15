@@ -5,18 +5,7 @@
 session_start();
 
 // Configuration BDD
-$host = 'localhost';
-$dbname = 'microfinances_dg';
-$username = 'root';
-$password = '';
-
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    die("Erreur de connexion : " . $e->getMessage());
-}
+require_once('../databases/database.php');
 
 // ============================================================
 // PARAMÈTRES
@@ -230,8 +219,10 @@ if ($format === 'pdf') {
         
         function SectionTitle($label) {
             $this->SetFont('Arial', 'B', 10);
-            $this->SetFillColor(200, 220, 255);
+            $this->SetFillColor(0, 0, 0);
+            $this->SetTextColor(255, 255, 255);
             $this->Cell(0, 8, $this->convert($label), 0, 1, 'L', true);
+            $this->SetTextColor(0, 0, 0);
             $this->Ln(2);
         }
         
@@ -325,12 +316,27 @@ if ($format === 'pdf') {
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background: #f1f5f9; padding: 24px; }
-        .dashboard { max-width: 1000px; margin: 0 auto; }
+        .dashboard { max-width: 1400px; margin: 0 auto; }
         
         .page-header { background: linear-gradient(135deg, #3b82f6, #60a5fa); border-radius: 24px; padding: 20px 28px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; box-shadow: 0 4px 6px -2px rgba(0,0,0,0.05); }
         .header-left h1 { font-size: 1.6rem; font-weight: 600; color: white; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; }
         .subtitle { font-size: 0.8rem; color: #e0f2fe; line-height: 1.4; }
         .badge { display: inline-block; background: #2563eb; color: white; padding: 4px 12px; border-radius: 30px; font-size: 0.7rem; font-weight: 500; margin-top: 8px; }
+
+        .form-control {
+        display: block;
+        width: 100%;
+        padding: 0.375rem 0.75rem;
+        font-size: 1rem;
+        font-weight: 400;
+        line-height: 1.5;
+        color: #212529;
+        background-color: #fff;
+        background-clip: padding-box;
+        border: 1px solid #dee2e6;
+        border-radius: 0.375rem;
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+        }
         
         .btn-group { display: flex; gap: 12px; }
         .btn-excel, .btn-pdf { display: inline-flex; align-items: center; gap: 8px; padding: 8px 20px; border-radius: 40px; font-weight: 500; font-size: 0.85rem; border: none; cursor: pointer; transition: 0.2s; text-decoration: none; }
@@ -461,7 +467,7 @@ if ($format === 'pdf') {
                         for ($s=1;$s<=2;$s++) { $sel=($s==$semestre)?'selected':''; echo "<option value='$s' $sel>$s".($s==1?'er':'e')." semestre</option>"; }
                         echo '</select>';
                     } else {
-                        echo '<label>Periode</label><input type="text" disabled value="Annee complete" style="background:#f3f4f6;cursor:default;">';
+                        echo '<label>Periode</label><input type="text" class="form-control" disabled value="Annee complete" style="background:#f3f4f6;cursor:default;">';
                     }
                     ?>
                 </div>
@@ -496,10 +502,10 @@ if ($format === 'pdf') {
                     <?php for($i = 0; $i < $nb_commissaires; $i++): ?>
                         <div class="commissaire-row" data-index="<?= $i ?>">
                             <div class="nom-input">
-                                <input type="text" name="commissaires[<?= $i ?>][nom]" placeholder="Nom du cabinet ou du commissaire" value="<?= isset($commissaires[$i]) ? htmlspecialchars($commissaires[$i]['nom_cabinet']) : '' ?>">
+                                <input type="text" class="form-control" name="commissaires[<?= $i ?>][nom]" placeholder="Nom du cabinet ou du commissaire" value="<?= isset($commissaires[$i]) ? htmlspecialchars($commissaires[$i]['nom_cabinet']) : '' ?>">
                             </div>
                             <div class="date-input">
-                                <input type="date" name="commissaires[<?= $i ?>][date_nomination]" value="<?= isset($commissaires[$i]) && $commissaires[$i]['date_nomination'] ? date('Y-m-d', strtotime($commissaires[$i]['date_nomination'])) : '' ?>">
+                                <input type="date" class="form-control" name="commissaires[<?= $i ?>][date_nomination]" value="<?= isset($commissaires[$i]) && $commissaires[$i]['date_nomination'] ? date('Y-m-d', strtotime($commissaires[$i]['date_nomination'])) : '' ?>">
                             </div>
                             <?php if($i >= 5): ?>
                                 <button type="button" class="btn-remove" onclick="supprimerCommissaire(this)"><i class="fas fa-trash"></i> Supprimer</button>
@@ -632,7 +638,7 @@ if ($format === 'pdf') {
             }
             html += '</select>';
         } else {
-            html = '<label>Periode</label><input type="text" disabled value="Annee complete" style="background:#f3f4f6;cursor:default;">';
+            html = '<label>Periode</label><input class="form-control" type="text" disabled value="Annee complete" style="background:#f3f4f6;cursor:default;">';
         }
         container.innerHTML = html;
     }
@@ -685,10 +691,10 @@ if ($format === 'pdf') {
         newRow.setAttribute('data-index', commissaireIndex);
         newRow.innerHTML = `
             <div class="nom-input">
-                <input type="text" name="commissaires[${commissaireIndex}][nom]" placeholder="Nom du cabinet ou du commissaire">
+                <input type="text" class="form-control" name="commissaires[${commissaireIndex}][nom]" placeholder="Nom du cabinet ou du commissaire">
             </div>
             <div class="date-input">
-                <input type="date" name="commissaires[${commissaireIndex}][date_nomination]">
+                <input type="date" class="form-control" name="commissaires[${commissaireIndex}][date_nomination]">
             </div>
             <button type="button" class="btn-remove" onclick="supprimerCommissaire(this)"><i class="fas fa-trash"></i> Supprimer</button>
         `;

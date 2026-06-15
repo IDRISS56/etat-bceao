@@ -2,6 +2,10 @@
 // DIMF_2008.php - État des biens avec clause de réserve de propriété (avec FPDF)
 session_start();
 
+// ============================================================
+// CONFIGURATION BDD
+// ============================================================
+require_once '../../databases/database.php';
 require_once '../../fpdf/fpdf.php';
 
 class PDF_DIMF extends FPDF {
@@ -15,9 +19,6 @@ class PDF_DIMF extends FPDF {
     static function montant($val){ return number_format((float)$val,0,',',' ').' F'; }
 }
 
-// Connexion BDD
-$host='localhost'; $dbname='microfinances_dg'; $username='root'; $password='';
-try { $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password); $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION); $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC); } catch(PDOException $e){ die("Erreur : ".$e->getMessage()); }
 
 // Paramètres période
 $exercice = isset($_GET['exercice'])?(int)$_GET['exercice']:date('Y');

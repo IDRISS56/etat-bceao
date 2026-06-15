@@ -2,6 +2,10 @@
 // DIMF_2080.php - Compte de résultat (Charges et Produits) avec FPDF
 session_start();
 
+// ============================================================
+// CONFIGURATION BDD
+// ============================================================
+require_once '../../databases/database.php';
 require_once '../../fpdf/fpdf.php';
 
 class PDF_DIMF extends FPDF {
@@ -37,14 +41,6 @@ class PDF_DIMF extends FPDF {
     function TableRow($cols,$data,$style='') { $fill=false; if($style=='subtotal'){ $this->SetFillColor(248,250,252); $this->SetFont('Arial','B',8); $fill=true; }elseif($style=='total'){ $this->SetFillColor(240,253,244); $this->SetFont('Arial','B',8.5); $fill=true; }else{ $this->SetFillColor(255,255,255); $this->SetFont('Arial','',7.5); } $this->SetTextColor(15,23,42); $this->SetDrawColor(226,232,240); foreach($cols as $i=>$col){ $val=isset($data[$i])?$data[$i]:''; $align=isset($col['align'])?$col['align']:'L'; $this->Cell($col['w'],5.5,self::u($val),1,0,$align,$fill); } $this->Ln(); }
     static function montant($val) { return number_format((float)$val,0,',',' ').' F'; }
 }
-
-// Connexion BDD
-$host='localhost'; $dbname='microfinances_dg'; $username='root'; $password='';
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch(PDOException $e){ die("Erreur : ".$e->getMessage()); }
 
 // Paramètres période
 $exercice = isset($_GET['exercice'])?(int)$_GET['exercice']:date('Y');
@@ -238,7 +234,7 @@ if($format==='pdf'){
         <div class="card">
             <div class="card-header"><i class="fas fa-arrow-up"></i> PRODUITS</div>
             <div class="table-wrapper">
-                <tr>
+                <table>
                     <thead><th>CODE</th><th>LIBELLÉ</th><th class="text-right">Montant (FCFA)</th></thead>
                     <tbody>
                         <tr class="subtotal-row"><td colspan="2">PRODUITS SUR OPÉRATIONS FINANCIÈRES</td><td class="text-right"><?= number_format($V08_total+$V3A_total,0,',',' ') ?></td></tr>
