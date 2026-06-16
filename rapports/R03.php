@@ -1,24 +1,22 @@
 <?php
 // R03.php - Limitation des prêts aux dirigeants et au personnel ainsi qu'aux personnes liées
 // Norme BCEAO: 0% à 10% (0 - 0.1)
-// Version avec POST et Bootstrap 5 (design préservé)
+// Version avec POST et Bootstrap 5
+// Affichage complet des éléments à déduire : D24, D31, D41, D46, L70, L80, Z52, Z53
 
 session_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
 
-// ------------------------- CONNEXION BDD -------------------------
 require_once('../databases/database.php');
 require_once('../fpdf/fpdf.php');
 
-// ------------------------- LECTURE DES PARAMÈTRES EN POST AVEC DÉFAUTS -------------------------
+// ------------------------- LECTURE DES PARAMÈTRES -------------------------
 $exercice = isset($_POST['exercice']) ? (int)$_POST['exercice'] : date('Y');
 $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode'] : 'annuel';
 $mois = isset($_POST['mois']) ? (int)$_POST['mois'] : 12;
 $trimestre = isset($_POST['trimestre']) ? (int)$_POST['trimestre'] : 4;
 $semestre = isset($_POST['semestre']) ? (int)$_POST['semestre'] : 2;
-
-// Paramètre manuel Z52 (provisions non constituées)
 $provisionsNonConst = isset($_POST['provisions_non_const']) ? (float)$_POST['provisions_non_const'] : 0;
 
 switch ($type_periode) {
@@ -32,17 +30,17 @@ $date_fin_periode = date('Y-m-t', strtotime("$exercice-" . str_pad($mois, 2, '0'
 $date_debut_exercice = "$exercice-01-01";
 $date_fin_exercice = "$exercice-12-31";
 
-// ------------------------- INITIALISATION VARIABLES -------------------------
-$montantA = 0; // Z51 : encours des prêts aux dirigeants/employés
-
-// Éléments pour le calcul des fonds propres (similaire à R01)
-$subventions = $fondsAffectes = $fondsCredit = $provisionsRisques = $provisionsReglementees = 0;
-$empruntsSubordonnes = $fondsRisques = $primesCapital = $reserves = $ecartReeval = 0;
-$capital = $fondsDotation = $reportPositif = $excedentProduits = $resultatExercice = 0;
-$capitalNonAppele = $excedentCharges = $immobilisationsIncorp = $reportNegatif = 0;
+// ------------------------- INITIALISATION -------------------------
+$montantA = 0; // Z51
+$fondsPropPositifs = 0;
+$capitalNonAppele = 0;
+$excedentCharges = 0;
+$immobilisationsIncorp = 0;
+$reportNegatif = 0;
 $participationsSFD = 0;
+$deductions = 0;
 
-// ------------------------- A - PRÊTS AUX DIRIGEANTS ET EMPLOYÉS (Z51) -------------------------
+// A - PRÊTS AUX DIRIGEANTS (Z51)
 try {
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse,0)),0) as total
@@ -63,8 +61,6 @@ try {
 } catch (PDOException $e) {
     $montantA = 0;
 }
-
-// Si aucune donnée, on essaie une requête plus simple (sans déduction des remboursements)
 if ($montantA == 0) {
     try {
         $stmt = $pdo->prepare("
@@ -82,8 +78,7 @@ if ($montantA == 0) {
     }
 }
 
-// ------------------------- B - FONDS PROPRES (identique à R01) -------------------------
-// Éléments positifs (classe 1)
+// B - FONDS PROPRES
 try {
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(montant_credit - montant_debit),0) as total
@@ -94,7 +89,6 @@ try {
     $stmt->execute([':date_fin' => $date_fin_periode]);
     $fondsPropPositifs = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $fondsPropPositifs = 0; }
-
 if ($fondsPropPositifs == 0) {
     try {
         $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant),0) as total FROM capital WHERE statut='valide' AND date_creation <= :date_fin");
@@ -103,10 +97,7 @@ if ($fondsPropPositifs == 0) {
     } catch (PDOException $e) { $fondsPropPositifs = 0; }
 }
 
-// Éléments à déduire (capital non appelé, immobilisations incorporelles, report négatif, etc.)
-$deductions = 0;
-
-// Capital non appelé (compte 109)
+// Capital non appelé (L62)
 try {
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(montant_debit - montant_credit),0) as solde
@@ -119,7 +110,7 @@ try {
     $deductions += $capitalNonAppele;
 } catch (PDOException $e) {}
 
-// Excédent des charges sur les produits (si résultat négatif)
+// Excédent des charges (E05) et résultat déficitaire (L80)
 try {
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(CASE WHEN pc.classe_compte='7' THEN montant_credit - montant_debit ELSE 0 END),0) as produits,
@@ -133,11 +124,12 @@ try {
     $resultatBrut = $res['produits'] - $res['charges'];
     if ($resultatBrut < 0) {
         $excedentCharges = abs($resultatBrut);
-        $deductions += $excedentCharges;
+        $deductions += $excedentCharges; // E05
+        $deductions += $excedentCharges; // L80
     }
 } catch (PDOException $e) {}
 
-// Immobilisations incorporelles nettes (D24, D31, D41, D46)
+// Immobilisations incorporelles total (réparties entre D24, D31, D41, D46)
 try {
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(montant_achat - amortissement_total),0) as valeur_nette
@@ -150,7 +142,7 @@ try {
     $deductions += $immobilisationsIncorp;
 } catch (PDOException $e) {}
 
-// Report à nouveau négatif
+// Report à nouveau négatif (L70)
 try {
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(CASE WHEN (montant_credit - montant_debit) < 0 THEN ABS(montant_credit - montant_debit) ELSE 0 END),0) as solde
@@ -163,10 +155,9 @@ try {
     $deductions += $reportNegatif;
 } catch (PDOException $e) {}
 
-// Z52 (provisions supplémentaires exigées) – saisie manuelle
-$deductions += $provisionsNonConst;
+$deductions += $provisionsNonConst; // Z52
 
-// Z53 (participations dans autres SFD)
+// Z53
 try {
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(montant_debit - montant_credit),0) as solde
@@ -182,14 +173,11 @@ try {
 $fondsPropres = $fondsPropPositifs - $deductions;
 if ($fondsPropres <= 0) $fondsPropres = 1;
 
-// Ratio
 $ratioR03 = $montantA / $fondsPropres;
 $pourcentage = $ratioR03 * 100;
-$normeMin = 0;
-$normeMax = 0.1;
-$conformite = ($ratioR03 >= $normeMin && $ratioR03 <= $normeMax) ? 'CONFORME' : 'NON_CONFORME';
+$conformite = ($ratioR03 >= 0 && $ratioR03 <= 0.1) ? 'CONFORME' : 'NON_CONFORME';
 
-// ------------------------- PRÉPARATION DES DONNÉES POUR TABLEAUX -------------------------
+// ------------------------- TABLEAUX -------------------------
 $lignesPrets = [
     ['code'=>'Z51','lib'=>'Encours brut des prêts et engagements par signature donnés aux dirigeants ou employés','montant'=>$montantA],
 ];
@@ -205,31 +193,38 @@ $lignesFondsPropPositifs = [
     ['code'=>'L50','lib'=>'Primes liées au capital','montant'=>0],
     ['code'=>'L55','lib'=>'Réserves','montant'=>0],
     ['code'=>'L59','lib'=>'Écart de réévaluation des immobilisations','montant'=>0],
-    ['code'=>'L60','lib'=>'Capital','montant'=>$capital],
+    ['code'=>'L60','lib'=>'Capital','montant'=>0],
     ['code'=>'L65','lib'=>'Fonds de dotation','montant'=>0],
     ['code'=>'L70','lib'=>'Report à nouveau positif','montant'=>0],
     ['code'=>'L75','lib'=>'Excédent des produits sur les charges','montant'=>0],
     ['code'=>'L80','lib'=>'Résultat excédentaire de l\'exercice','montant'=>0],
 ];
 
+$partImmobilisation = ($immobilisationsIncorp > 0) ? $immobilisationsIncorp / 4 : 0;
 $lignesDeductions = [
     ['code'=>'L62','lib'=>'Capital non appelé','montant'=>$capitalNonAppele],
     ['code'=>'E05','lib'=>'Excédent des charges sur les produits','montant'=>$excedentCharges],
-    ['code'=>'D24/31/41/46','lib'=>'Immobilisations incorporelles nettes','montant'=>$immobilisationsIncorp],
+    ['code'=>'D24','lib'=>'Immobilisations incorporelles nettes en cours','montant'=>$partImmobilisation],
+    ['code'=>'D31','lib'=>'Immobilisations d\'exploitation incorporelles nettes','montant'=>$partImmobilisation],
+    ['code'=>'D41','lib'=>'Immobilisations hors exploitation incorporelles nettes','montant'=>$partImmobilisation],
+    ['code'=>'D46','lib'=>'Immobilisations incorporelles nettes acquise par réalisation de garantie','montant'=>$partImmobilisation],
     ['code'=>'L70','lib'=>'Report à nouveau négatif','montant'=>$reportNegatif],
+    ['code'=>'L80','lib'=>'Résultat déficitaire de l\'exercice','montant'=>$excedentCharges],
     ['code'=>'Z52','lib'=>'Complément de provisions non constituées','montant'=>$provisionsNonConst],
     ['code'=>'Z53','lib'=>'Participations dans d\'autres SFD','montant'=>$participationsSFD],
 ];
 
-// ------------------------- EXPORT PDF AVEC PDF_DIMF (via POST) -------------------------
+// ------------------------- EXPORT PDF -------------------------
 if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
+    // Nettoyer les buffers pour éviter les erreurs de headers
+    if (ob_get_length()) ob_clean();
 
     class PDF_DIMF extends FPDF {
-        public $codeDimf  = 'R03';
+        public $codeDimf = 'R03';
         public $titreDimf = 'LIMITATION DES PRETS AUX DIRIGEANTS ET AU PERSONNEL AINSI QU AUX PERSONNES LIEES';
-        public $nomSfd    = 'SFD';
-        public $periode   = '';
-        public $exercice  = '';
+        public $nomSfd = 'SFD';
+        public $periode = '';
+        public $exercice = '';
 
         static function u($str) {
             return iconv('UTF-8', 'ISO-8859-1//TRANSLIT', $str);
@@ -265,8 +260,8 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
             $this->SetTextColor(100, 116, 139);
             $this->Cell(0, 4, self::u(
                 'SICS-BCEAO  •  Généré le ' . date('d/m/Y H:i:s') .
-                '  •  Page ' . $this->PageNo() . '/{nb}'),
-                0, 0, 'C');
+                '  •  Page ' . $this->PageNo() . '/{nb}'
+            ), 0, 0, 'C');
         }
 
         function SectionTitle($label) {
@@ -285,34 +280,35 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
             $this->SetDrawColor(226, 232, 240);
             $this->SetLineWidth(0.2);
             foreach ($cols as $col) {
-                $align = isset($col['align']) ? $col['align'] : 'L';
-                $this->Cell($col['w'], 6, self::u($col['label']), 1, 0, $align, true);
+                $this->Cell($col['w'], 6, self::u($col['label']), 1, 0, isset($col['align']) ? $col['align'] : 'L', true);
             }
             $this->Ln();
         }
 
         function TableRow($cols, $data, $style = '') {
+            $fill = false;
             switch ($style) {
                 case 'subtotal':
                     $this->SetFillColor(248, 250, 252);
                     $this->SetFont('Arial', 'B', 8);
-                    $fill = true; break;
+                    $fill = true;
+                    break;
                 case 'total':
                     $this->SetFillColor(240, 253, 244);
                     $this->SetFont('Arial', 'B', 8.5);
-                    $fill = true; break;
+                    $fill = true;
+                    break;
                 default:
                     $this->SetFillColor(255, 255, 255);
                     $this->SetFont('Arial', '', 7.5);
-                    $fill = false; break;
+                    $fill = false;
             }
             $this->SetTextColor(15, 23, 42);
             $this->SetDrawColor(226, 232, 240);
             $this->SetLineWidth(0.1);
             foreach ($cols as $i => $col) {
-                $val   = isset($data[$i]) ? $data[$i] : '';
-                $align = isset($col['align']) ? $col['align'] : 'L';
-                $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
+                $val = isset($data[$i]) ? $data[$i] : '';
+                $this->Cell($col['w'], 5.5, self::u($val), 1, 0, isset($col['align']) ? $col['align'] : 'L', $fill);
             }
             $this->Ln();
         }
@@ -324,11 +320,11 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
 
     $pdf = new PDF_DIMF();
     $pdf->AliasNbPages();
-    $pdf->codeDimf  = 'R03';
+    $pdf->codeDimf = 'R03';
     $pdf->titreDimf = 'LIMITATION DES PRETS AUX DIRIGEANTS ET AU PERSONNEL AINSI QU AUX PERSONNES LIEES';
-    $pdf->nomSfd    = 'SFD';
-    $pdf->periode   = ucfirst($type_periode);
-    $pdf->exercice  = $exercice;
+    $pdf->nomSfd = 'SFD';
+    $pdf->periode = ucfirst($type_periode);
+    $pdf->exercice = $exercice;
     $pdf->AddPage();
 
     $cols = [
@@ -337,7 +333,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
         ['w' => 50, 'label' => 'Montant (FCFA)', 'align' => 'R']
     ];
 
-    // Section A – Prêts aux dirigeants/employés
+    // Section A
     $pdf->SectionTitle("A - PRETS ET ENGAGEMENTS PAR SIGNATURE");
     $pdf->TableHeader($cols);
     foreach ($lignesPrets as $row) {
@@ -347,7 +343,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
 
     $pdf->Ln(5);
 
-    // Section B – Fonds propres (positifs puis déductions)
+    // Section B
     $pdf->SectionTitle("B - FONDS PROPRES");
     $pdf->TableHeader($cols);
     foreach ($lignesFondsPropPositifs as $row) {
@@ -371,49 +367,47 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
     exit;
 }
 
-// ------------------------- EXPORT EXCEL (HTML .xls) VIA POST -------------------------
+// ------------------------- EXPORT EXCEL -------------------------
 if (isset($_POST['export']) && $_POST['export'] === 'excel') {
+    if (ob_get_length()) ob_clean();
+
     header('Content-Type: application/vnd.ms-excel');
     header('Content-Disposition: attachment; filename="R03_' . $exercice . '_' . $type_periode . '.xls"');
     header('Cache-Control: max-age=0');
+
     echo '<html><head><meta charset="UTF-8"><style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        h2 { color: #1a3a5c; font-size: 16pt; }
-        h3 { color: #1a3a5c; font-size: 14pt; margin-top: 20px; }
-        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 10pt; }
-        th, td { border: 1px solid #999; padding: 8px; vertical-align: top; }
-        th { background: #f2f2f2; text-align: center; font-weight: bold; }
-        .text-right { text-align: right; }
-        .total-row { background: #e8f5e9; font-weight: bold; }
-        .subtotal-row { background: #f0f7ff; font-weight: bold; }
+        body { font-family: Arial, sans-serif; margin:20px; }
+        h2 { color:#1a3a5c; font-size:16pt; }
+        h3 { color:#1a3a5c; font-size:14pt; margin-top:20px; }
+        table { border-collapse:collapse; width:100%; margin-bottom:20px; font-size:10pt; }
+        th, td { border:1px solid #999; padding:8px; vertical-align:top; }
+        th { background:#f2f2f2; text-align:center; font-weight:bold; }
+        .text-right { text-align:right; }
+        .total-row { background:#e8f5e9; font-weight:bold; }
+        .subtotal-row { background:#f0f7ff; font-weight:bold; }
     </style></head><body>';
     echo '<h2>R03 - LIMITATION DES PRETS AUX DIRIGEANTS ET AU PERSONNEL AINSI QU AUX PERSONNES LIEES</h2>';
     echo '<p><strong>Période :</strong> ' . $exercice . ' - ' . ucfirst($type_periode) . ' (arrêtée au ' . date('d/m/Y', strtotime($date_fin_periode)) . ')</p>';
 
-    // Tableau A
     echo '<h3>A - PRETS ET ENGAGEMENTS PAR SIGNATURE</h3>';
-    echo '<table>';
-    echo '<tr><th>Code</th><th>Libellé</th><th class="text-right">Montant (FCFA)</th></tr>';
+    echo '<table><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant (FCFA)</th></tr>';
     foreach ($lignesPrets as $r) {
         echo '<tr><td style="width:15%">' . $r['code'] . '</td><td style="width:70%">' . $r['lib'] . '</td><td class="text-right" style="width:15%">' . number_format($r['montant'], 0, ',', ' ') . '</td></tr>';
     }
-    echo '<tr class="total-row"><td colspan="2">TOTAL (A)</td><td class="text-right">' . number_format($montantA, 0, ',', ' ') . '</td></tr>';
-    echo '</table>';
+    echo '<tr class="total-row"><td colspan="2">TOTAL (A)</td><td class="text-right">' . number_format($montantA, 0, ',', ' ') . '</td></tr></table>';
 
-    // Tableau B – Fonds propres
     echo '<h3>B - FONDS PROPRES</h3>';
-    echo '<table>';
-    echo '<tr><th>Code</th><th>Libellé</th><th class="text-right">Montant (FCFA)</th></tr>';
+    echo '<table><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant (FCFA)</th></tr>';
     foreach ($lignesFondsPropPositifs as $fp) {
         echo '<tr><td style="width:15%">' . $fp['code'] . '</td><td style="width:70%">' . $fp['lib'] . '</td><td class="text-right">' . number_format($fp['montant'], 0, ',', ' ') . '</td></tr>';
     }
     echo '<tr class="subtotal-row"><td colspan="2">TOTAL ÉLÉMENTS POSITIFS</td><td class="text-right">' . number_format($fondsPropPositifs, 0, ',', ' ') . '</td></tr>';
+    echo '<tr><td colspan="3" style="background:#f8fafc; font-weight:bold;">ÉLÉMENTS À DÉDUIRE</td></tr>';
     foreach ($lignesDeductions as $dd) {
         echo '<tr><td style="width:15%">' . $dd['code'] . '</td><td style="width:70%">' . $dd['lib'] . '</td><td class="text-right">' . number_format($dd['montant'], 0, ',', ' ') . '</td></tr>';
     }
     echo '<tr class="subtotal-row"><td colspan="2">TOTAL DÉDUCTIONS</td><td class="text-right">' . number_format($deductions, 0, ',', ' ') . '</td></tr>';
-    echo '<tr class="total-row"><td colspan="2">FONDS PROPRES (B)</td><td class="text-right">' . number_format($fondsPropres, 0, ',', ' ') . '</td></tr>';
-    echo '</table>';
+    echo '<tr class="total-row"><td colspan="2">FONDS PROPRES (B)</td><td class="text-right">' . number_format($fondsPropres, 0, ',', ' ') . '</td></tr></table>';
 
     echo '<p><strong>RATIO R03 = A / B = ' . number_format($pourcentage, 2) . '%</strong></p>';
     echo '<p>Norme BCEAO : 0% à 10%<br>Conformité : ' . $conformite . '</p>';
@@ -421,20 +415,16 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
     exit;
 }
 
-// ------------------------- AFFICHAGE WEB (INTERFACE DIMF_2000 AVEC BOOTSTRAP 5, DESIGN CONSERVÉ) -------------------------
+// ------------------------- AFFICHAGE WEB (Bootstrap 5) -------------------------
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <title>R03 - Limitation des prêts aux dirigeants (BCEAO)</title>
-    <!-- Bootstrap 5 CSS (intégré sans modification du design) -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Styles personnalisés inchangés (conservent le design original) -->
     <style>
-        /* Styles DIMF_2000 (identiques aux précédents) */
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family:'Inter',system-ui,sans-serif; background:#f1f5f9; padding:24px; }
         .dashboard { max-width:1400px; margin:0 auto; }
@@ -466,6 +456,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         th { background:#f8fafc; font-weight:600; }
         .text-right { text-align:right; }
         .total-row { background:#f0fdf4; font-weight:700; }
+        .subtotal-row { background:#f8fafc; font-weight:700; }
         .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px; border-radius:16px; display:flex; align-items:center; gap:14px; }
         .two-columns { display:flex; gap:24px; flex-wrap:wrap; }
         .two-columns .card { flex:1; min-width:320px; }
@@ -482,13 +473,11 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
             <div class="badge">Norme BCEAO : 0% ≤ Ratio ≤ 10%</div>
         </div>
         <div class="btn-group">
-            <!-- Boutons export en POST (via formulaire dynamique JS) -->
             <button class="btn-excel" onclick="submitExport('excel')"><i class="fas fa-file-excel"></i> Excel</button>
             <button class="btn-pdf" onclick="submitExport('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
         </div>
     </div>
 
-    <!-- Formulaire de filtres en POST (remplace l'ancien système GET) -->
     <div class="card" id="filtersCard">
         <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres de période</div>
         <form method="post" id="filterForm">
@@ -510,12 +499,9 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
                         <option value="annuel" <?=$type_periode=='annuel'?'selected':''?>>Annuel</option>
                     </select>
                 </div>
-                <div class="filter-item" id="dynamicSelectContainer">
-                    <!-- Contenu dynamique généré par JS, les noms des champs sont 'mois', 'trimestre' ou 'semestre' -->
-                </div>
+                <div class="filter-item" id="dynamicSelectContainer"></div>
                 <button type="submit" class="btn-apply">Appliquer</button>
             </div>
-            <!-- Saisie manuelle pour Z52 (intégrée au formulaire principal) -->
             <div style="margin-top:12px; padding:8px; background:#fefce8; border-radius:12px;">
                 <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
                     <div class="filter-item">
@@ -528,7 +514,6 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         </form>
     </div>
 
-    <!-- Carte ratio -->
     <div class="ratio-card">
         <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:20px;">
             <div><div class="card-header" style="padding:0;">Ratio R03 – Prêts aux dirigeants / Fonds propres</div><div class="ratio-value <?=$conformite=='CONFORME'?'conforme':'non-conforme'?>"><?=number_format($pourcentage,2)?>%</div><div>Encours prêts dirigeants / Fonds propres</div></div>
@@ -539,26 +524,61 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         <div style="margin-top:16px;"><i class="fas fa-calculator"></i> R03 = <?=number_format($montantA,0,',',' ')?> / <?=number_format($fondsPropres,0,',',' ')?> = <?=number_format($pourcentage,2)?>%</div>
     </div>
 
-    <!-- Deux colonnes web -->
     <div class="two-columns">
-        <div class="card"><div class="card-header"><i class="fas fa-hand-holding-usd"></i> A – PRÊTS AUX DIRIGEANTS</div><div class="table-wrapper"><table><thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead><tbody><?php foreach($lignesPrets as $r): ?><tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr><?php endforeach; ?><tr class="total-row"><td colspan="2">TOTAL (A)</td><td class="text-right"><?=number_format($montantA,0,',',' ')?></td></tr></tbody></table></div></div>
-        <div class="card"><div class="card-header"><i class="fas fa-landmark"></i> B – FONDS PROPRES</div><div class="table-wrapper"><table><thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead><tbody><?php foreach($lignesFondsPropPositifs as $fp): ?><tr><td><?=$fp['code']?></td><td><?=$fp['lib']?></td><td class="text-right"><?=number_format($fp['montant'],0,',',' ')?></td></tr><?php endforeach; ?><tr class="total-row"><td colspan="2">FONDS PROPRES (B)</td><td class="text-right"><?=number_format($fondsPropres,0,',',' ')?></td></tr></tbody></table></div></div>
+        <div class="card">
+            <div class="card-header"><i class="fas fa-hand-holding-usd"></i> A – PRÊTS ET ENGAGEMENTS PAR SIGNATURE</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead>
+                    <tbody>
+                        <?php foreach($lignesPrets as $r): ?>
+                        <tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="total-row"><td colspan="2">TOTAL (A)</td><td class="text-right"><?=number_format($montantA,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header"><i class="fas fa-landmark"></i> B – FONDS PROPRES</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead>
+                    <tbody>
+                        <?php foreach($lignesFondsPropPositifs as $fp): ?>
+                        <tr><td><?=$fp['code']?></td><td><?=$fp['lib']?></td><td class="text-right"><?=number_format($fp['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="subtotal-row"><td colspan="2">TOTAL ÉLÉMENTS POSITIFS</td><td class="text-right"><?=number_format($fondsPropPositifs,0,',',' ')?></td></tr>
+
+                        <tr><td colspan="3" style="background:#f8fafc; font-weight:600; padding:8px 16px;">ÉLÉMENTS À DÉDUIRE</td></tr>
+                        <?php foreach($lignesDeductions as $dd): ?>
+                        <tr><td><?=$dd['code']?></td><td><?=$dd['lib']?></td><td class="text-right"><?=number_format($dd['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="subtotal-row"><td colspan="2">TOTAL DÉDUCTIONS</td><td class="text-right"><?=number_format($deductions,0,',',' ')?></td></tr>
+                        <tr class="total-row"><td colspan="2">FONDS PROPRES (B)</td><td class="text-right"><?=number_format($fondsPropres,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
-    <!-- Interprétation -->
-    <div class="card"><div class="card-header">Interprétation</div><div class="info-box"><i class="fas fa-gavel"></i><div><?=($conformite=='CONFORME')?'✓ Conforme – Les prêts aux dirigeants représentent '.number_format($pourcentage,2).'% des fonds propres, ≤10%.':'⚠️ Non conforme – Les prêts aux dirigeants dépassent 10% des fonds propres.'?></div></div></div>
+    <div class="card">
+        <div class="card-header">Interprétation</div>
+        <div class="info-box">
+            <i class="fas fa-gavel"></i>
+            <div><?=($conformite=='CONFORME')?'✓ Conforme – Les prêts aux dirigeants représentent '.number_format($pourcentage,2).'% des fonds propres, ≤10%.':'⚠️ Non conforme – Les prêts aux dirigeants dépassent 10% des fonds propres.'?></div>
+        </div>
+    </div>
 
     <div class="page-footer"><i class="fas fa-calendar-alt"></i> Généré le <?=date('d/m/Y à H:i:s')?> – Période <?=$exercice?> (<?=ucfirst($type_periode)?>) arrêtée au <?=date('d/m/Y',strtotime($date_fin_periode))?></div>
 </div>
 
-<!-- Scripts : Bootstrap 5 JS (pour les composants optionnels) + gestion POST -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // Remplissage dynamique du select (mois, trimestre, semestre) avec conservation des valeurs POST
     function updateDynamicSelect() {
         const type = document.getElementById('typePeriodeSelect').value;
         const container = document.getElementById('dynamicSelectContainer');
-        // Valeurs actuelles depuis PHP (transmises par POST)
         const currentMois = <?=$mois?>;
         const currentTrimestre = <?=$trimestre?>;
         const currentSemestre = <?=json_encode($semestre)?>;
@@ -590,7 +610,6 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         container.innerHTML = html;
     }
 
-    // Soumission des exports en POST (réutilisation des valeurs du formulaire principal)
     function submitExport(type) {
         const form = document.getElementById('filterForm');
         const input = document.createElement('input');
@@ -602,7 +621,6 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         form.removeChild(input);
     }
 
-    // Écouteur pour changement de type période
     document.addEventListener('DOMContentLoaded', function() {
         updateDynamicSelect();
         document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect);

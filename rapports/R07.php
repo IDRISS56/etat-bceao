@@ -1,17 +1,16 @@
 <?php
 // R07.php - Constitution de la réserve générale
 // Norme BCEAO: ≥ 15% du bénéfice distribuable
-// Version avec POST et Bootstrap 5 (design préservé)
+// Version avec POST et Bootstrap 5
 
 session_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
 
-// ------------------------- CONNEXION BDD -------------------------
 require_once('../databases/database.php');
 require_once('../fpdf/fpdf.php');
 
-// ------------------------- LECTURE DES PARAMÈTRES EN POST AVEC DÉFAUTS -------------------------
+// ------------------------- LECTURE DES PARAMÈTRES -------------------------
 $exercice = isset($_POST['exercice']) ? (int)$_POST['exercice'] : date('Y');
 $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode'] : 'annuel';
 $mois = isset($_POST['mois']) ? (int)$_POST['mois'] : 12;
@@ -126,6 +125,7 @@ if ($base <= 0) {
     $conformite = ($ratioR07 >= 0.15) ? 'CONFORME' : 'NON_CONFORME';
 }
 
+// ------------------------- PRÉPARATION DES TABLEAUX -------------------------
 $lignesBase = [
     ['code'=>'L80','lib'=>'Résultat excédentaire de l\'exercice (bénéfice)','montant'=>$resultatExercice],
     ['code'=>'L70','lib'=>'Report à nouveau déficitaire','montant'=>$reportNegatif],
@@ -134,8 +134,9 @@ $lignesDotation = [
     ['code'=>'106','lib'=>'Dotation annuelle de la réserve générale','montant'=>$dotation],
 ];
 
-// ------------------------- EXPORT PDF (via POST) -------------------------
+// ------------------------- EXPORT PDF -------------------------
 if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
+    if (ob_get_length()) ob_clean();
 
     class PDF_DIMF extends FPDF {
         public $codeDimf  = 'R07';
@@ -278,11 +279,14 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
     exit;
 }
 
-// ------------------------- EXPORT EXCEL (HTML .xls) VIA POST -------------------------
+// ------------------------- EXPORT EXCEL -------------------------
 if (isset($_POST['export']) && $_POST['export'] === 'excel') {
+    if (ob_get_length()) ob_clean();
+
     header('Content-Type: application/vnd.ms-excel');
     header('Content-Disposition: attachment; filename="R07_' . $exercice . '_' . $type_periode . '.xls"');
     header('Cache-Control: max-age=0');
+
     echo '<html><head><meta charset="UTF-8"><style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         h2 { color: #1a3a5c; font-size: 16pt; }
@@ -339,18 +343,15 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
     exit;
 }
 
-// ------------------------- AFFICHAGE WEB (INTERFACE DIMF_2000 AVEC BOOTSTRAP 5, DESIGN CONSERVÉ) -------------------------
+// ------------------------- AFFICHAGE WEB -------------------------
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <title>R07 - Constitution de la réserve générale (BCEAO)</title>
-    <!-- Bootstrap 5 CSS (intégré sans modification du design) -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Styles personnalisés inchangés (conservent le design original) -->
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family:'Inter',system-ui,sans-serif; background:#f1f5f9; padding:24px; }
@@ -374,6 +375,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         .ratio-value { font-size:3rem; font-weight:800; }
         .ratio-value.conforme { color:#10b981; }
         .ratio-value.non-conforme { color:#ef4444; }
+        .ratio-value.na { color:#6b7280; }
         .norme-box { background:#f1f5f9; border-radius:16px; padding:12px 20px; text-align:center; }
         .progress-bar { background:#e2e8f0; border-radius:50px; height:24px; overflow:hidden; margin-top:20px; }
         .progress-fill { background:linear-gradient(90deg,#3b82f6,#60a5fa); height:100%; border-radius:50px; text-align:center; color:white; font-size:0.75rem; line-height:24px; }
@@ -403,13 +405,12 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
             <div class="badge">Norme BCEAO : Dotation ≥ 15% du bénéfice distribuable</div>
         </div>
         <div class="btn-group">
-            <!-- Boutons export en POST (via formulaire dynamique JS) -->
             <button class="btn-excel" onclick="submitExport('excel')"><i class="fas fa-file-excel"></i> Excel</button>
             <button class="btn-pdf" onclick="submitExport('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
         </div>
     </div>
 
-    <!-- Formulaire de filtres en POST (remplace l'ancien système GET) -->
+    <!-- Formulaire de filtres -->
     <div class="card" id="filtersCard">
         <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres de période</div>
         <form method="post" id="filterForm">
@@ -431,9 +432,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
                         <option value="annuel" <?=$type_periode=='annuel'?'selected':''?>>Annuel</option>
                     </select>
                 </div>
-                <div class="filter-item" id="dynamicSelectContainer">
-                    <!-- Contenu dynamique généré par JS, les noms des champs sont 'mois', 'trimestre' ou 'semestre' -->
-                </div>
+                <div class="filter-item" id="dynamicSelectContainer"></div>
                 <button type="submit" class="btn-apply">Appliquer</button>
             </div>
         </form>
@@ -442,19 +441,44 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
     <!-- Carte ratio -->
     <div class="ratio-card">
         <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:20px;">
-            <div><div class="card-header" style="padding:0;">Ratio R07 – Taux de dotation</div><div class="ratio-value <?=($base>0 && $pourcentage>=15)?'conforme':'non-conforme'?>"><?=($base>0)?number_format($pourcentage,2).'%':'N/A'?></div><div>Dotation / Base</div></div>
-            <div class="norme-box"><div><strong>Norme BCEAO</strong></div><div style="font-size:1.5rem;">≥ 15%</div><div>Seuil minimal : 15%</div></div>
-            <div><span class="badge" style="background:<?=($base>0)?($pourcentage>=15?'#10b981':'#ef4444'):'#6b7280'?>;"><?=$conformite?></span></div>
+            <div>
+                <div class="card-header" style="padding:0;">Ratio R07 – Taux de dotation</div>
+                <div class="ratio-value <?=($base>0)?($pourcentage>=15?'conforme':'non-conforme'):'na'?>">
+                    <?=($base>0)?number_format($pourcentage,2).'%':'N/A'?>
+                </div>
+                <div>Dotation / Base</div>
+            </div>
+            <div class="norme-box">
+                <div><strong>Norme BCEAO</strong></div>
+                <div style="font-size:1.5rem;">≥ 15%</div>
+                <div>Seuil minimal : 15%</div>
+            </div>
+            <div>
+                <span class="badge" style="background:<?=($base>0)?($pourcentage>=15?'#10b981':'#ef4444'):'#6b7280'?>;">
+                    <?=$conformite?>
+                </span>
+            </div>
         </div>
         <?php if($base>0): ?>
-        <div class="progress-bar"><div class="progress-fill <?=($pourcentage<15?'non-conforme':'')?>" style="width:<?=min($pourcentage,100)?>%;"><?=number_format($pourcentage,1)?>%</div></div>
-        <div style="margin-top:16px;"><i class="fas fa-calculator"></i> R07 = <?=number_format($dotation,0,',',' ')?> / <?=number_format($base,0,',',' ')?> = <?=number_format($pourcentage,2)?>%</div>
+        <div class="progress-bar">
+            <div class="progress-fill <?=($pourcentage<15?'non-conforme':'')?>" style="width:<?=min($pourcentage,100)?>%;">
+                <?=number_format($pourcentage,1)?>%
+            </div>
+        </div>
+        <div style="margin-top:16px;">
+            <i class="fas fa-calculator"></i> R07 = <?=number_format($dotation,0,',',' ')?> / <?=number_format($base,0,',',' ')?> = <?=number_format($pourcentage,2)?>%
+            <?php if($pourcentage<15): ?>
+                <span class="text-danger">(Manque <?=number_format($montantMinimal - $dotation,0,',',' ')?> FCFA)</span>
+            <?php endif; ?>
+        </div>
         <?php else: ?>
-        <div class="info-box" style="margin-top:16px; background:#fefce8;"><i class="fas fa-info-circle"></i> Aucun bénéfice distribuable pour l'exercice <?=$exercice?>.</div>
+        <div class="info-box" style="margin-top:16px; background:#fefce8;">
+            <i class="fas fa-info-circle"></i> Aucun bénéfice distribuable pour l'exercice <?=$exercice?>.
+        </div>
         <?php endif; ?>
     </div>
 
-    <!-- Deux colonnes web -->
+    <!-- Deux colonnes -->
     <div class="two-columns">
         <div class="card">
             <div class="card-header"><i class="fas fa-chart-line"></i> A – BASE DE CALCUL</div>
@@ -511,15 +535,29 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
     </div>
     <?php endif; ?>
 
-    <div class="card"><div class="card-header">Interprétation</div><div class="info-box"><i class="fas fa-gavel"></i><div><?php if($base<=0): ?>ℹ️ Aucun bénéfice distribuable. La constitution de la réserve n'est pas exigée.<?php elseif($pourcentage>=15): ?>✓ Conforme – La dotation annuelle (<?=number_format($pourcentage,2)?>%) atteint au moins 15% du bénéfice distribuable.<?php else: ?>⚠️ Non conforme – La dotation annuelle (<?=number_format($pourcentage,2)?>%) est inférieure au minimum requis de 15%. Il manque <?=number_format($montantMinimal - $dotation,0,',',' ')?> FCFA.<?php endif; ?></div></div></div>
+    <!-- Interprétation -->
+    <div class="card">
+        <div class="card-header">Interprétation</div>
+        <div class="info-box">
+            <i class="fas fa-gavel"></i>
+            <div>
+                <?php if($base<=0): ?>
+                    ℹ️ Aucun bénéfice distribuable. La constitution de la réserve n'est pas exigée.
+                <?php elseif($pourcentage>=15): ?>
+                    ✓ Conforme – La dotation annuelle (<?=number_format($pourcentage,2)?>%) atteint au moins 15% du bénéfice distribuable.
+                <?php else: ?>
+                    ⚠️ Non conforme – La dotation annuelle (<?=number_format($pourcentage,2)?>%) est inférieure au minimum requis de 15%. Il manque <?=number_format($montantMinimal - $dotation,0,',',' ')?> FCFA.
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
 
     <div class="page-footer"><i class="fas fa-calendar-alt"></i> Généré le <?=date('d/m/Y à H:i:s')?> – Période <?=$exercice?> (<?=ucfirst($type_periode)?>) arrêtée au <?=date('d/m/Y',strtotime($date_fin_periode))?></div>
 </div>
 
-<!-- Scripts : Bootstrap 5 JS + gestion POST -->
+<!-- Scripts -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // Remplissage dynamique du select (mois, trimestre, semestre) avec conservation des valeurs POST
     function updateDynamicSelect() {
         const type = document.getElementById('typePeriodeSelect').value;
         const container = document.getElementById('dynamicSelectContainer');
@@ -554,7 +592,6 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         container.innerHTML = html;
     }
 
-    // Soumission des exports en POST (réutilisation des valeurs du formulaire principal)
     function submitExport(type) {
         const form = document.getElementById('filterForm');
         const input = document.createElement('input');

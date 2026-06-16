@@ -1,17 +1,29 @@
 <?php
 // R08.php - Norme de capitalisation
 // Norme BCEAO: ≥ 15% (fonds propres / total actif)
-// Version avec POST et Bootstrap 5 (design préservé)
+// Version avec POST et Bootstrap 5
+
+// Activer l'affichage des erreurs pour le débogage
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
 
 session_start();
-error_reporting(E_ALL);
-ini_set('display_errors', 0);
 
-// ------------------------- CONNEXION BDD -------------------------
-require_once('../databases/database.php');
-require_once('../fpdf/fpdf.php');
+// ------------------------- INCLUSION DES FICHIERS AVEC VÉRIFICATION -------------------------
+$dbFile = __DIR__ . '/../databases/database.php';
+$fpdfFile = __DIR__ . '/../fpdf/fpdf.php';
 
-// ------------------------- LECTURE DES PARAMÈTRES EN POST AVEC DÉFAUTS -------------------------
+if (!file_exists($dbFile)) {
+    die('Fichier database.php introuvable : ' . $dbFile);
+}
+if (!file_exists($fpdfFile)) {
+    die('Fichier fpdf.php introuvable : ' . $fpdfFile);
+}
+
+require_once($dbFile);
+require_once($fpdfFile);
+
+// ------------------------- LECTURE DES PARAMÈTRES -------------------------
 $exercice = isset($_POST['exercice']) ? (int)$_POST['exercice'] : date('Y');
 $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode'] : 'annuel';
 $mois = isset($_POST['mois']) ? (int)$_POST['mois'] : 12;
@@ -30,8 +42,7 @@ $date_fin_periode = date('Y-m-t', strtotime("$exercice-" . str_pad($mois, 2, '0'
 $date_debut_exercice = "$exercice-01-01";
 $date_fin_exercice = "$exercice-12-31";
 
-// ------------------------- CALCUL DES FONDS PROPRES (identique à R03/R04) -------------------------
-// Éléments positifs
+// ------------------------- CALCUL DES FONDS PROPRES -------------------------
 $fondsPropPositifs = 0;
 
 // L10 - Subventions d'investissement
@@ -176,7 +187,6 @@ try {
     $capital = (float)$stmt->fetch()['solde'];
     $fondsPropPositifs += $capital;
 } catch (PDOException $e) {
-    // Fallback table capital
     try {
         $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant),0) as total FROM capital WHERE statut='valide' AND date_creation <= :date_fin");
         $stmt->execute([':date_fin' => $date_fin_periode]);
@@ -253,7 +263,7 @@ $immobilisationsIncorp = 0;
 $reportNegatif = 0;
 $participationsSFD = 0;
 
-// L62 - Capital non appelé (compte 109)
+// L62 - Capital non appelé
 try {
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(montant_debit - montant_credit),0) as solde
@@ -272,7 +282,7 @@ if (isset($resultatBrut) && $resultatBrut < 0) {
     $fondsPropDeductions += $excedentCharges;
 }
 
-// Immobilisations incorporelles nettes (D24, D31, D41, D46)
+// Immobilisations incorporelles nettes (total)
 try {
     $stmt = $pdo->prepare("
         SELECT COALESCE(SUM(montant_achat - amortissement_total),0) as valeur_nette
@@ -298,7 +308,7 @@ try {
     $fondsPropDeductions += $reportNegatif;
 } catch (PDOException $e) {}
 
-// Z52 - Complément de provisions non constituées (saisie manuelle)
+// Z52 - Provisions non constituées (saisie manuelle)
 $fondsPropDeductions += $provisionsNonConst;
 
 // Z53 - Participations dans d'autres SFD
@@ -329,7 +339,6 @@ try {
     $stmt->execute([':date_fin' => $date_fin_periode]);
     $totalActif = (float)$stmt->fetch()['total'];
     if ($totalActif == 0) {
-        // Fallback sur comptes
         $stmt = $pdo->prepare("SELECT COALESCE(SUM(solde),0) as total FROM comptes WHERE solde > 0 AND statut='actif'");
         $stmt->execute();
         $totalActif = (float)$stmt->fetch()['total'];
@@ -344,7 +353,7 @@ $pourcentage = $ratioR08 * 100;
 $normeMin = 0.15;
 $conformite = ($ratioR08 >= $normeMin) ? 'CONFORME' : 'NON_CONFORME';
 
-// Détails pour l'affichage (positifs et déductions)
+// ------------------------- PRÉPARATION DES TABLEAUX -------------------------
 $positifs = [
     ['code'=>'L10','lib'=>'Subventions d\'investissement','montant'=>$subventions],
     ['code'=>'L20','lib'=>'Fonds affectés','montant'=>$fondsAffectes],
@@ -362,171 +371,201 @@ $positifs = [
     ['code'=>'L75','lib'=>'Excédent des produits sur les charges','montant'=>$excedentProduits>0?$excedentProduits:0],
     ['code'=>'L80','lib'=>'Résultat excédentaire de l\'exercice','montant'=>$resultatExercice],
 ];
+
+$partImmobilisation = ($immobilisationsIncorp > 0) ? $immobilisationsIncorp / 4 : 0;
+
 $deductions = [
     ['code'=>'L62','lib'=>'Capital non appelé','montant'=>$capitalNonAppele],
     ['code'=>'E05','lib'=>'Excédent des charges sur les produits','montant'=>$excedentCharges],
-    ['code'=>'D24/31/41/46','lib'=>'Immobilisations incorporelles nettes','montant'=>$immobilisationsIncorp],
+    ['code'=>'D24','lib'=>'Immobilisations incorporelles nettes en cours','montant'=>$partImmobilisation],
+    ['code'=>'D31','lib'=>'Immobilisations d\'exploitation incorporelles nettes','montant'=>$partImmobilisation],
+    ['code'=>'D41','lib'=>'Immobilisations hors exploitation incorporelles nettes','montant'=>$partImmobilisation],
+    ['code'=>'D46','lib'=>'Immobilisations incorporelles nettes acquise par réalisation de garantie','montant'=>$partImmobilisation],
     ['code'=>'L70','lib'=>'Report à nouveau négatif','montant'=>$reportNegatif],
     ['code'=>'Z52','lib'=>'Complément de provisions non constituées','montant'=>$provisionsNonConst],
     ['code'=>'Z53','lib'=>'Participations dans d\'autres SFD','montant'=>$participationsSFD],
 ];
 
-// ------------------------- EXPORT PDF AVEC PDF_DIMF (via POST) -------------------------
+// ------------------------- EXPORT PDF AVEC GESTION D'ERREUR -------------------------
 if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
+    try {
+        // Nettoyer les buffers
+        if (ob_get_length()) ob_clean();
 
-    class PDF_DIMF extends FPDF {
-        public $codeDimf  = 'R08';
-        public $titreDimf = 'NORME DE CAPITALISATION';
-        public $nomSfd    = 'SFD';
-        public $periode   = '';
-        public $exercice  = '';
-
-        static function u($str) {
-            return iconv('UTF-8', 'ISO-8859-1//TRANSLIT', $str);
+        // Vérifier que FPDF est disponible
+        if (!class_exists('FPDF')) {
+            throw new Exception('FPDF class not found. Check include path.');
         }
 
-        function Header() {
-            $this->SetFillColor(156, 163, 175);
-            $this->Rect(0, 0, $this->GetPageWidth(), 28, 'F');
-            $this->SetFont('Arial', '', 7);
-            $this->SetTextColor(255, 255, 255);
-            $this->SetXY(8, 3);
-            $this->Cell(0, 4, self::u('République de Côte d\'Ivoire  •  Ministère de l\'Economie et des Finances  -  DGTCP / DSFD'), 0, 1, 'L');
-            $this->SetFont('Arial', 'B', 13);
-            $this->SetTextColor(255, 255, 255);
-            $this->SetX(8);
-            $this->Cell(0, 7, self::u($this->codeDimf . '  -  ' . $this->titreDimf), 0, 1, 'L');
-            $this->SetFont('Arial', '', 8);
-            $this->SetTextColor(255, 255, 255);
-            $this->SetX(8);
-            $this->Cell(0, 5, self::u(
-                'SFD : ' . $this->nomSfd .
-                '   |   Période : ' . $this->periode .
-                '   |   Exercice : ' . $this->exercice .
-                '   |   Arrêté au : ' . date('d/m/Y', strtotime($GLOBALS['date_fin_periode']))
-            ), 0, 1, 'L');
-            $this->SetTextColor(0, 0, 0);
-            $this->Ln(4);
-        }
+        class PDF_DIMF extends FPDF {
+            public $codeDimf  = 'R08';
+            public $titreDimf = 'NORME DE CAPITALISATION';
+            public $nomSfd    = 'SFD';
+            public $periode   = '';
+            public $exercice  = '';
 
-        function Footer() {
-            $this->SetY(-12);
-            $this->SetFont('Arial', 'I', 7);
-            $this->SetTextColor(100, 116, 139);
-            $this->Cell(0, 4, self::u(
-                'SICS-BCEAO  •  Généré le ' . date('d/m/Y H:i:s') .
-                '  •  Page ' . $this->PageNo() . '/{nb}'),
-                0, 0, 'C');
-        }
-
-        function SectionTitle($label) {
-            $this->SetFont('Arial', 'B', 9);
-            $this->SetFillColor(0, 0, 0);
-            $this->SetTextColor(255, 255, 255);
-            $this->Cell(0, 7, self::u('  ' . strtoupper($label)), 0, 1, 'L', true);
-            $this->SetTextColor(0, 0, 0);
-            $this->Ln(1);
-        }
-
-        function TableHeader($cols) {
-            $this->SetFont('Arial', 'B', 8);
-            $this->SetFillColor(248, 250, 252);
-            $this->SetTextColor(30, 41, 59);
-            $this->SetDrawColor(226, 232, 240);
-            $this->SetLineWidth(0.2);
-            foreach ($cols as $col) {
-                $align = isset($col['align']) ? $col['align'] : 'L';
-                $this->Cell($col['w'], 6, self::u($col['label']), 1, 0, $align, true);
+            static function u($str) {
+                return iconv('UTF-8', 'ISO-8859-1//TRANSLIT', $str);
             }
-            $this->Ln();
-        }
 
-        function TableRow($cols, $data, $style = '') {
-            switch ($style) {
-                case 'subtotal':
-                    $this->SetFillColor(248, 250, 252);
-                    $this->SetFont('Arial', 'B', 8);
-                    $fill = true; break;
-                case 'total':
-                    $this->SetFillColor(240, 253, 244);
-                    $this->SetFont('Arial', 'B', 8.5);
-                    $fill = true; break;
-                default:
-                    $this->SetFillColor(255, 255, 255);
-                    $this->SetFont('Arial', '', 7.5);
-                    $fill = false; break;
+            function Header() {
+                $this->SetFillColor(156, 163, 175);
+                $this->Rect(0, 0, $this->GetPageWidth(), 28, 'F');
+                $this->SetFont('Arial', '', 7);
+                $this->SetTextColor(255, 255, 255);
+                $this->SetXY(8, 3);
+                $this->Cell(0, 4, self::u('République de Côte d\'Ivoire  •  Ministère de l\'Economie et des Finances  -  DGTCP / DSFD'), 0, 1, 'L');
+                $this->SetFont('Arial', 'B', 13);
+                $this->SetTextColor(255, 255, 255);
+                $this->SetX(8);
+                $this->Cell(0, 7, self::u($this->codeDimf . '  -  ' . $this->titreDimf), 0, 1, 'L');
+                $this->SetFont('Arial', '', 8);
+                $this->SetTextColor(255, 255, 255);
+                $this->SetX(8);
+                $this->Cell(0, 5, self::u(
+                    'SFD : ' . $this->nomSfd .
+                    '   |   Période : ' . $this->periode .
+                    '   |   Exercice : ' . $this->exercice .
+                    '   |   Arrêté au : ' . date('d/m/Y', strtotime($GLOBALS['date_fin_periode']))
+                ), 0, 1, 'L');
+                $this->SetTextColor(0, 0, 0);
+                $this->Ln(4);
             }
-            $this->SetTextColor(15, 23, 42);
-            $this->SetDrawColor(226, 232, 240);
-            $this->SetLineWidth(0.1);
-            foreach ($cols as $i => $col) {
-                $val   = isset($data[$i]) ? $data[$i] : '';
-                $align = isset($col['align']) ? $col['align'] : 'L';
-                $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
+
+            function Footer() {
+                $this->SetY(-12);
+                $this->SetFont('Arial', 'I', 7);
+                $this->SetTextColor(100, 116, 139);
+                $this->Cell(0, 4, self::u(
+                    'SICS-BCEAO  •  Généré le ' . date('d/m/Y H:i:s') .
+                    '  •  Page ' . $this->PageNo() . '/{nb}'),
+                    0, 0, 'C');
             }
-            $this->Ln();
+
+            function SectionTitle($label) {
+                $this->SetFont('Arial', 'B', 9);
+                $this->SetFillColor(0, 0, 0);
+                $this->SetTextColor(255, 255, 255);
+                $this->Cell(0, 7, self::u('  ' . strtoupper($label)), 0, 1, 'L', true);
+                $this->SetTextColor(0, 0, 0);
+                $this->Ln(1);
+            }
+
+            function TableHeader($cols) {
+                $this->SetFont('Arial', 'B', 8);
+                $this->SetFillColor(248, 250, 252);
+                $this->SetTextColor(30, 41, 59);
+                $this->SetDrawColor(226, 232, 240);
+                $this->SetLineWidth(0.2);
+                foreach ($cols as $col) {
+                    $align = isset($col['align']) ? $col['align'] : 'L';
+                    $this->Cell($col['w'], 6, self::u($col['label']), 1, 0, $align, true);
+                }
+                $this->Ln();
+            }
+
+            function TableRow($cols, $data, $style = '') {
+                switch ($style) {
+                    case 'subtotal':
+                        $this->SetFillColor(248, 250, 252);
+                        $this->SetFont('Arial', 'B', 8);
+                        $fill = true; break;
+                    case 'total':
+                        $this->SetFillColor(240, 253, 244);
+                        $this->SetFont('Arial', 'B', 8.5);
+                        $fill = true; break;
+                    default:
+                        $this->SetFillColor(255, 255, 255);
+                        $this->SetFont('Arial', '', 7.5);
+                        $fill = false; break;
+                }
+                $this->SetTextColor(15, 23, 42);
+                $this->SetDrawColor(226, 232, 240);
+                $this->SetLineWidth(0.1);
+                foreach ($cols as $i => $col) {
+                    $val   = isset($data[$i]) ? $data[$i] : '';
+                    $align = isset($col['align']) ? $col['align'] : 'L';
+                    $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
+                }
+                $this->Ln();
+            }
+
+            static function montant($val) {
+                return number_format((float)$val, 0, ',', ' ') . ' F';
+            }
         }
 
-        static function montant($val) {
-            return number_format((float)$val, 0, ',', ' ') . ' F';
+        $pdf = new PDF_DIMF();
+        $pdf->AliasNbPages();
+        $pdf->codeDimf  = 'R08';
+        $pdf->titreDimf = 'NORME DE CAPITALISATION';
+        $pdf->nomSfd    = 'SFD';
+        $pdf->periode   = ucfirst($type_periode);
+        $pdf->exercice  = $exercice;
+        $pdf->AddPage();
+
+        $cols = [
+            ['w' => 30, 'label' => 'Code', 'align' => 'L'],
+            ['w' => 100, 'label' => 'Libellé', 'align' => 'L'],
+            ['w' => 50, 'label' => 'Montant (FCFA)', 'align' => 'R']
+        ];
+
+        // Calcul de la largeur totale
+        $largeurTotale = 0;
+        foreach ($cols as $col) {
+            $largeurTotale += $col['w'];
         }
+
+        // Tableau A – FONDS PROPRES
+        $pdf->SectionTitle("A - FONDS PROPRES");
+        $pdf->TableHeader($cols);
+        foreach ($positifs as $row) {
+            $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
+        }
+        $pdf->TableRow($cols, ['', 'TOTAL ÉLÉMENTS POSITIFS', PDF_DIMF::montant($fondsPropPositifs)], 'subtotal');
+
+        // Titre ÉLÉMENTS À DÉDUIRE
+        $pdf->SetFont('Arial', 'B', 8);
+        $pdf->SetFillColor(230, 240, 255);
+        $pdf->Cell($largeurTotale, 6, PDF_DIMF::u('  ÉLÉMENTS À DÉDUIRE'), 1, 1, 'L', true);
+
+        foreach ($deductions as $row) {
+            $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
+        }
+        $pdf->TableRow($cols, ['', 'TOTAL DÉDUCTIONS', PDF_DIMF::montant($fondsPropDeductions)], 'subtotal');
+        $pdf->TableRow($cols, ['', 'FONDS PROPRES (A)', PDF_DIMF::montant($fondsPropres)], 'total');
+
+        $pdf->Ln(5);
+
+        // Tableau B – TOTAL ACTIF
+        $pdf->SectionTitle("B - TOTAL ACTIF DE FIN DE PERIODE");
+        $pdf->TableHeader($cols);
+        $pdf->TableRow($cols, ['E90', 'Total actif net', PDF_DIMF::montant($totalActif)]);
+        $pdf->TableRow($cols, ['', 'TOTAL ACTIF (B)', PDF_DIMF::montant($totalActif)], 'total');
+
+        $pdf->Ln(5);
+        $pdf->SetFont('Arial', 'B', 10);
+        $pdf->Cell(0, 7, PDF_DIMF::u("RATIO R08 = A / B = " . number_format($pourcentage, 2) . "%"), 0, 1);
+        $pdf->SetFont('Arial', '', 9);
+        $pdf->MultiCell(0, 5, PDF_DIMF::u("Norme BCEAO : Ratio ≥ 15%\nConformité : " . $conformite));
+
+        $pdf->Output('I', 'R08_' . $exercice . '_' . $type_periode . '.pdf');
+        exit;
+
+    } catch (Exception $e) {
+        // Afficher l'erreur pour le débogage
+        die('Erreur lors de la génération du PDF : ' . $e->getMessage() . ' dans ' . $e->getFile() . ' à la ligne ' . $e->getLine());
     }
-
-    $pdf = new PDF_DIMF();
-    $pdf->AliasNbPages();
-    $pdf->codeDimf  = 'R08';
-    $pdf->titreDimf = 'NORME DE CAPITALISATION';
-    $pdf->nomSfd    = 'SFD';
-    $pdf->periode   = ucfirst($type_periode);
-    $pdf->exercice  = $exercice;
-    $pdf->AddPage();
-
-    $cols = [
-        ['w' => 30, 'label' => 'Code', 'align' => 'L'],
-        ['w' => 100, 'label' => 'Libellé', 'align' => 'L'],
-        ['w' => 50, 'label' => 'Montant (FCFA)', 'align' => 'R']
-    ];
-
-    // Section A – Fonds propres (positifs)
-    $pdf->SectionTitle("A - FONDS PROPRES (ELEMENTS POSITIFS)");
-    $pdf->TableHeader($cols);
-    foreach ($positifs as $row) {
-        $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
-    }
-    $pdf->TableRow($cols, ['', 'TOTAL ÉLÉMENTS POSITIFS', PDF_DIMF::montant($fondsPropPositifs)], 'subtotal');
-
-    $pdf->Ln(2);
-    $pdf->SectionTitle("Eléments à déduire");
-    $pdf->TableHeader($cols);
-    foreach ($deductions as $row) {
-        $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
-    }
-    $pdf->TableRow($cols, ['', 'TOTAL DÉDUCTIONS', PDF_DIMF::montant($fondsPropDeductions)], 'subtotal');
-    $pdf->TableRow($cols, ['', 'FONDS PROPRES (A)', PDF_DIMF::montant($fondsPropres)], 'total');
-
-    $pdf->Ln(5);
-
-    // Section B – Total actif
-    $pdf->SectionTitle("B - TOTAL ACTIF DE FIN DE PERIODE");
-    $pdf->TableHeader($cols);
-    $pdf->TableRow($cols, ['E90', 'Total actif net', PDF_DIMF::montant($totalActif)]);
-    $pdf->TableRow($cols, ['', 'TOTAL ACTIF (B)', PDF_DIMF::montant($totalActif)], 'total');
-
-    $pdf->Ln(5);
-    $pdf->SetFont('Arial', 'B', 10);
-    $pdf->Cell(0, 7, PDF_DIMF::u("RATIO R08 = A / B = " . number_format($pourcentage, 2) . "%"), 0, 1);
-    $pdf->SetFont('Arial', '', 9);
-    $pdf->MultiCell(0, 5, PDF_DIMF::u("Norme BCEAO : Ratio ≥ 15%\nConformité : " . $conformite));
-
-    $pdf->Output('I', 'R08_' . $exercice . '_' . $type_periode . '.pdf');
-    exit;
 }
 
-// ------------------------- EXPORT EXCEL (HTML .xls) VIA POST -------------------------
+// ------------------------- EXPORT EXCEL -------------------------
 if (isset($_POST['export']) && $_POST['export'] === 'excel') {
+    if (ob_get_length()) ob_clean();
+
     header('Content-Type: application/vnd.ms-excel');
     header('Content-Disposition: attachment; filename="R08_' . $exercice . '_' . $type_periode . '.xls"');
     header('Cache-Control: max-age=0');
+
     echo '<html><head><meta charset="UTF-8"><style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         h2 { color: #1a3a5c; font-size: 16pt; }
@@ -537,6 +576,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         .text-right { text-align: right; }
         .total-row { background: #e8f5e9; font-weight: bold; }
         .subtotal-row { background: #f0f7ff; font-weight: bold; }
+        .section-title { background: #d9e8f5; font-weight: bold; }
         .col-code { width: 15%; }
         .col-libelle { width: 70%; }
         .col-montant { width: 15%; }
@@ -544,7 +584,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
     echo '<h2>R08 - NORME DE CAPITALISATION</h2>';
     echo '<p><strong>Période :</strong> ' . $exercice . ' - ' . ucfirst($type_periode) . ' (arrêtée au ' . date('d/m/Y', strtotime($date_fin_periode)) . ')</p>';
 
-    // Tableau A – Fonds propres
+    // Tableau A – FONDS PROPRES
     echo '<h3>A - FONDS PROPRES</h3>';
     echo '<table>';
     echo '<tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant (FCFA)</th></tr>';
@@ -552,6 +592,10 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         echo '<tr><td class="col-code">' . $r['code'] . '</td><td class="col-libelle">' . $r['lib'] . '</td><td class="col-montant text-right">' . number_format($r['montant'], 0, ',', ' ') . '</td></tr>';
     }
     echo '<tr class="subtotal-row"><td colspan="2">TOTAL ÉLÉMENTS POSITIFS</td><td class="text-right">' . number_format($fondsPropPositifs, 0, ',', ' ') . '</td></tr>';
+
+    // Titre ÉLÉMENTS À DÉDUIRE
+    echo '<tr><td colspan="3" class="section-title">ÉLÉMENTS À DÉDUIRE</td></tr>';
+
     foreach ($deductions as $r) {
         echo '<tr><td class="col-code">' . $r['code'] . '</td><td class="col-libelle">' . $r['lib'] . '</td><td class="col-montant text-right">' . number_format($r['montant'], 0, ',', ' ') . '</td></tr>';
     }
@@ -559,7 +603,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
     echo '<tr class="total-row"><td colspan="2">FONDS PROPRES (A)</td><td class="text-right">' . number_format($fondsPropres, 0, ',', ' ') . '</td></tr>';
     echo '</table>';
 
-    // Tableau B – Total actif
+    // Tableau B – TOTAL ACTIF
     echo '<h3>B - TOTAL ACTIF DE FIN DE PÉRIODE</h3>';
     echo '<table>';
     echo '<tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant (FCFA)</th></tr>';
@@ -573,18 +617,15 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
     exit;
 }
 
-// ------------------------- AFFICHAGE WEB (INTERFACE DIMF_2000 AVEC BOOTSTRAP 5, DESIGN CONSERVÉ) -------------------------
+// ------------------------- AFFICHAGE WEB -------------------------
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <title>R08 - Norme de capitalisation (BCEAO)</title>
-    <!-- Bootstrap 5 CSS (intégré sans modification du design) -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Styles personnalisés inchangés -->
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family:'Inter',system-ui,sans-serif; background:#f1f5f9; padding:24px; }
@@ -618,6 +659,8 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         th { background:#f8fafc; font-weight:600; }
         .text-right { text-align:right; }
         .total-row { background:#f0fdf4; font-weight:700; }
+        .subtotal-row { background:#f8fafc; font-weight:700; }
+        .section-title-row td { background:#d9e8f5; font-weight:bold; padding:8px 16px; }
         .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px; border-radius:16px; display:flex; align-items:center; gap:14px; }
         .two-columns { display:flex; gap:24px; flex-wrap:wrap; }
         .two-columns .card { flex:1; min-width:320px; }
@@ -637,13 +680,12 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
             <div class="badge">Norme BCEAO : Ratio ≥ 15%</div>
         </div>
         <div class="btn-group">
-            <!-- Boutons export en POST (via formulaire dynamique JS) -->
             <button class="btn-excel" onclick="submitExport('excel')"><i class="fas fa-file-excel"></i> Excel</button>
             <button class="btn-pdf" onclick="submitExport('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
         </div>
     </div>
 
-    <!-- Formulaire de filtres en POST (remplace l'ancien système GET) -->
+    <!-- Formulaire de filtres -->
     <div class="card" id="filtersCard">
         <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres de période</div>
         <form method="post" id="filterForm">
@@ -665,12 +707,9 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
                         <option value="annuel" <?=$type_periode=='annuel'?'selected':''?>>Annuel</option>
                     </select>
                 </div>
-                <div class="filter-item" id="dynamicSelectContainer">
-                    <!-- Contenu dynamique généré par JS, les noms des champs sont 'mois', 'trimestre' ou 'semestre' -->
-                </div>
+                <div class="filter-item" id="dynamicSelectContainer"></div>
                 <button type="submit" class="btn-apply">Appliquer</button>
             </div>
-            <!-- Saisie manuelle pour Z52 (intégrée au formulaire principal) -->
             <div style="margin-top:12px; padding:8px; background:#fefce8; border-radius:12px;">
                 <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
                     <div class="filter-item">
@@ -694,10 +733,10 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         <div style="margin-top:16px;"><i class="fas fa-calculator"></i> R08 = <?=number_format($fondsPropres,0,',',' ')?> / <?=number_format($totalActif,0,',',' ')?> = <?=number_format($pourcentage,2)?>%</div>
     </div>
 
-    <!-- Deux colonnes web (positifs / déductions) -->
+    <!-- Deux colonnes -->
     <div class="two-columns">
         <div class="card">
-            <div class="card-header"><i class="fas fa-plus-circle"></i> A – Éléments positifs des fonds propres</div>
+            <div class="card-header"><i class="fas fa-landmark"></i> A – FONDS PROPRES</div>
             <div class="table-wrapper">
                 <table>
                     <thead><tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant</th></tr></thead>
@@ -705,52 +744,49 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
                         <?php foreach($positifs as $r): ?>
                         <tr><td class="col-code"><?=$r['code']?></td><td class="col-libelle"><?=$r['lib']?></td><td class="col-montant text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
                         <?php endforeach; ?>
-                        <tr class="total-row"><td colspan="2">TOTAL ÉLÉMENTS POSITIFS</td><td class="text-right"><?=number_format($fondsPropPositifs,0,',',' ')?></td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <div class="card">
-            <div class="card-header"><i class="fas fa-minus-circle"></i> Éléments à déduire</div>
-            <div class="table-wrapper">
-                <table>
-                    <thead><tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant</th></tr></thead>
-                    <tbody>
+                        <tr class="subtotal-row"><td colspan="2">TOTAL ÉLÉMENTS POSITIFS</td><td class="text-right"><?=number_format($fondsPropPositifs,0,',',' ')?></td></tr>
+
+                        <tr class="section-title-row"><td colspan="3">ÉLÉMENTS À DÉDUIRE</td></tr>
+
                         <?php foreach($deductions as $r): ?>
                         <tr><td class="col-code"><?=$r['code']?></td><td class="col-libelle"><?=$r['lib']?></td><td class="col-montant text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
                         <?php endforeach; ?>
-                        <tr class="total-row"><td colspan="2">TOTAL DÉDUCTIONS</td><td class="text-right"><?=number_format($fondsPropDeductions,0,',',' ')?></td></tr>
+                        <tr class="subtotal-row"><td colspan="2">TOTAL DÉDUCTIONS</td><td class="text-right"><?=number_format($fondsPropDeductions,0,',',' ')?></td></tr>
                         <tr class="total-row"><td colspan="2"><strong>FONDS PROPRES (A)</strong></td><td class="text-right"><strong><?=number_format($fondsPropres,0,',',' ')?></strong></td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
-    </div>
 
-    <!-- Total actif -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-chart-line"></i> B – TOTAL ACTIF DE FIN DE PÉRIODE</div>
-        <div class="table-wrapper">
-            <table>
-                <thead><tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant</th></tr></thead>
-                <tbody>
-                    <tr><td class="col-code">E90</td><td class="col-libelle">Total actif net</td><td class="col-montant text-right"><?=number_format($totalActif,0,',',' ')?></td></tr>
-                    <tr class="total-row"><td colspan="2">TOTAL ACTIF (B)</td><td class="text-right"><?=number_format($totalActif,0,',',' ')?></td></tr>
-                </tbody>
-            </table>
+        <div class="card">
+            <div class="card-header"><i class="fas fa-chart-line"></i> B – TOTAL ACTIF</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th class="col-code">Code</th><th class="col-libelle">Libellé</th><th class="col-montant text-right">Montant</th></tr></thead>
+                    <tbody>
+                        <tr><td class="col-code">E90</td><td class="col-libelle">Total actif net</td><td class="col-montant text-right"><?=number_format($totalActif,0,',',' ')?></td></tr>
+                        <tr class="total-row"><td colspan="2">TOTAL ACTIF (B)</td><td class="text-right"><?=number_format($totalActif,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 
     <!-- Interprétation -->
-    <div class="card"><div class="card-header">Interprétation</div><div class="info-box"><i class="fas fa-gavel"></i><div><?=($conformite=='CONFORME')?'✓ Conforme – Le ratio de capitalisation est de '.number_format($pourcentage,2).'%, supérieur ou égal à 15%.':'⚠️ Non conforme – Le ratio de capitalisation est de '.number_format($pourcentage,2).'%, inférieur à 15%.'?></div></div></div>
+    <div class="card">
+        <div class="card-header">Interprétation</div>
+        <div class="info-box">
+            <i class="fas fa-gavel"></i>
+            <div><?=($conformite=='CONFORME')?'✓ Conforme – Le ratio de capitalisation est de '.number_format($pourcentage,2).'%, supérieur ou égal à 15%.':'⚠️ Non conforme – Le ratio de capitalisation est de '.number_format($pourcentage,2).'%, inférieur à 15%.'?></div>
+        </div>
+    </div>
 
     <div class="page-footer"><i class="fas fa-calendar-alt"></i> Généré le <?=date('d/m/Y à H:i:s')?> – Période <?=$exercice?> (<?=ucfirst($type_periode)?>) arrêtée au <?=date('d/m/Y',strtotime($date_fin_periode))?></div>
 </div>
 
-<!-- Scripts : Bootstrap 5 JS + gestion POST -->
+<!-- Scripts -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // Remplissage dynamique du select (mois, trimestre, semestre) avec conservation des valeurs POST
     function updateDynamicSelect() {
         const type = document.getElementById('typePeriodeSelect').value;
         const container = document.getElementById('dynamicSelectContainer');
@@ -785,7 +821,6 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         container.innerHTML = html;
     }
 
-    // Soumission des exports en POST (réutilisation des valeurs du formulaire principal)
     function submitExport(type) {
         const form = document.getElementById('filterForm');
         const input = document.createElement('input');

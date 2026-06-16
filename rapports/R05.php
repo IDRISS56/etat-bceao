@@ -88,13 +88,13 @@ try {
     $comptesOrdDebiteurs = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) {}
 
-// A2J - Dépôts à court terme constitués auprès des institutions financières
-$autresDepotsCourtTerme = 0; // à adapter si besoin
+// A2J - Dépôts à court terme constitués auprès des institutions financières (simulé)
+$autresDepotsCourtTerme = 0;
 
-// A2A - Autres comptes de dépôts débiteurs
-$autresDepotsDebiteurs = 0; // simplifié
+// A2A - Autres comptes de dépôts débiteurs (simulé)
+$autresDepotsDebiteurs = 0;
 
-// A3B - Comptes de prêts à court terme aux institutions financières
+// A3B - Comptes de prêts à court terme aux institutions financières (simulé)
 $pretsCourtTermeInstFin = 0;
 
 // B2D - Crédits à court terme aux membres (durée ≤ 12 mois)
@@ -109,13 +109,13 @@ try {
     $creditsCourtTermeClients = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) {}
 
-// B2N - Comptes ordinaires débiteurs des membres
+// B2N - Comptes ordinaires débiteurs des membres (simulé)
 $comptesOrdDebiteursMembres = $comptesOrdDebiteurs;
 
-// B30 - Crédits à moyen terme (13-60 mois) – on ne prend que la partie à moins de 3 mois ? Non, selon le canevas on prend tout le poste car tous ses sous-comptes ont une durée <3 mois. Pour simplifier, on prend 0.
+// B30 - Crédits à moyen terme (on ne prend que la partie à moins de 3 mois, ici on simplifie à 0)
 $creditsMoyenTerme = 0;
 
-// B40 - Crédits à long terme – idem, 0
+// B40 - Crédits à long terme (idem)
 $creditsLongTerme = 0;
 
 // C10 - Titres de placement
@@ -165,7 +165,7 @@ try {
     $comptesCrediteursInstFin = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) {}
 
-// F2A - Autres comptes de dépôts créditeurs
+// F2A - Autres comptes de dépôts créditeurs (simulé)
 $autresDepotsCrediteursInstFin = $comptesCrediteursInstFin;
 
 // F3E - Emprunts à moins d'un an
@@ -255,51 +255,54 @@ $conformite = ($ratioR05 >= $normeMin) ? 'CONFORME' : 'NON_CONFORME';
 // ------------------------- PRÉPARATION DES DONNÉES POUR TABLEAUX -------------------------
 $lignesActifLiquide = [
     ['code'=>'A10','lib'=>'Valeurs en caisse','montant'=>$disponibilites],
-    ['code'=>'A12','lib'=>'Comptes ordinaires débiteurs','montant'=>$comptesOrdDebiteurs],
-    ['code'=>'A2J','lib'=>'Dépôts à court terme constitués','montant'=>$autresDepotsCourtTerme],
-    ['code'=>'A2A','lib'=>'Autres comptes de dépôts débiteurs','montant'=>$autresDepotsDebiteurs],
+    ['code'=>'A12','lib'=>'Comptes ordinaires débiteurs chez les institutions financières','montant'=>$comptesOrdDebiteurs],
+    ['code'=>'A2J','lib'=>'Dépôts à court terme constitués auprès des institutions financières','montant'=>$autresDepotsCourtTerme],
+    ['code'=>'A2A','lib'=>'Autres comptes de dépôts débiteurs chez les institutions financières','montant'=>$autresDepotsDebiteurs],
     ['code'=>'A3B','lib'=>'Comptes de prêts à court terme aux institutions financières','montant'=>$pretsCourtTermeInstFin],
-    ['code'=>'B2D','lib'=>'Crédits à court terme aux membres','montant'=>$creditsCourtTermeClients],
-    ['code'=>'B2N','lib'=>'Comptes ordinaires débiteurs des membres','montant'=>$comptesOrdDebiteursMembres],
+    ['code'=>'B2D','lib'=>'Crédits à court terme aux membres, bénéficiaires ou clients','montant'=>$creditsCourtTermeClients],
+    ['code'=>'B2N','lib'=>'Comptes ordinaires débiteurs des membres, bénéficiaires ou clients','montant'=>$comptesOrdDebiteursMembres],
     ['code'=>'B30','lib'=>'Crédits à moyen terme','montant'=>$creditsMoyenTerme],
     ['code'=>'B40','lib'=>'Crédits à long terme','montant'=>$creditsLongTerme],
     ['code'=>'C10','lib'=>'Titres de placement','montant'=>$titresPlacement],
     ['code'=>'C30','lib'=>'Comptes de stocks','montant'=>$stocks],
     ['code'=>'C40','lib'=>'Débiteurs divers','montant'=>$debiteursDivers],
-    ['code'=>'C56','lib'=>'Valeurs à l\'encaissement','montant'=>$valeursEncaissement],
-    ['code'=>'A60','lib'=>'Créances rattachées (inst. financières)','montant'=>$creancesRattacheesInstFin],
-    ['code'=>'B65','lib'=>'Créances rattachées (membres)','montant'=>$creancesRattacheesMembres],
-    ['code'=>'C55','lib'=>'Créances rattachées (divers)','montant'=>$creancesRattacheesDivers],
-    ['code'=>'N1H','lib'=>'Engagements de financement reçus (inst. financières)','montant'=>$engagementsRecusInstFin],
-    ['code'=>'N1K','lib'=>'Engagements de financement reçus (membres)','montant'=>$engagementsRecusMembres],
-    ['code'=>'N2H','lib'=>'Engagements de garantie reçus (inst. financières)','montant'=>$garantiesRecuesInstFin],
-    ['code'=>'N2M','lib'=>'Engagements de garantie reçus (membres)','montant'=>$garantiesRecuesMembres],
+    ['code'=>'C56','lib'=>'Valeurs à l\'encaissement avec crédit immédiat','montant'=>$valeursEncaissement],
+    ['code'=>'A60','lib'=>'Créances rattachées sur les institutions financières','montant'=>$creancesRattacheesInstFin],
+    ['code'=>'B65','lib'=>'Créances rattachées sur les membres bénéficiaires et clients','montant'=>$creancesRattacheesMembres],
+    ['code'=>'C55','lib'=>'Créances rattachées sur les opérations sur titres et opérations diverses','montant'=>$creancesRattacheesDivers],
+    ['code'=>'N1H','lib'=>'Engagements de financement reçus des institutions financières','montant'=>$engagementsRecusInstFin],
+    ['code'=>'N1K','lib'=>'Engagements de financement reçus des membres bénéficiaires ou clients','montant'=>$engagementsRecusMembres],
+    ['code'=>'N2H','lib'=>'Engagements de garantie reçus des institutions financières','montant'=>$garantiesRecuesInstFin],
+    ['code'=>'N2M','lib'=>'Engagements de garantie reçus des membres bénéficiaires ou clients','montant'=>$garantiesRecuesMembres],
 ];
 
 $lignesPassifExigible = [
-    ['code'=>'F1A','lib'=>'Comptes ordinaires créditeurs (inst. financières)','montant'=>$comptesCrediteursInstFin],
-    ['code'=>'F2A','lib'=>'Autres comptes de dépôts créditeurs','montant'=>$autresDepotsCrediteursInstFin],
-    ['code'=>'F3E','lib'=>'Emprunts à moins d\'un an','montant'=>$empruntsMoinsUnAn],
+    ['code'=>'F1A','lib'=>'Comptes ordinaires créditeurs des institutions financières auprès du SFD','montant'=>$comptesCrediteursInstFin],
+    ['code'=>'F2A','lib'=>'Autres comptes de dépôts créditeurs des institutions financières','montant'=>$autresDepotsCrediteursInstFin],
+    ['code'=>'F3E','lib'=>'Emprunts à moins d\'un an auprès des institutions financières','montant'=>$empruntsMoinsUnAn],
     ['code'=>'F3F','lib'=>'Emprunts à terme','montant'=>$empruntsTerme],
-    ['code'=>'F50','lib'=>'Autres sommes dues (inst. financières)','montant'=>$autresSommesDuesInstFin],
-    ['code'=>'G10','lib'=>'Comptes ordinaires créditeurs (membres)','montant'=>$comptesCrediteursMembres],
+    ['code'=>'F50','lib'=>'Autres sommes dues aux institutions financières','montant'=>$autresSommesDuesInstFin],
+    ['code'=>'G10','lib'=>'Comptes ordinaires créditeurs des membres, bénéficiaires ou clients auprès de l\'institution','montant'=>$comptesCrediteursMembres],
     ['code'=>'G15','lib'=>'Dépôts à terme reçus','montant'=>$depotsTermeRecus],
     ['code'=>'G2A','lib'=>'Comptes d\'épargne à régime spécial','montant'=>$epargneSpeciale],
-    ['code'=>'G30','lib'=>'Autres dépôts de garantie reçus','montant'=>$depotsGarantieRecus],
-    ['code'=>'G35','lib'=>'Autres dépôts reçus','montant'=>$autresDepotsRecus],
+    ['code'=>'G30','lib'=>'Autres dépôts de garantie reçus des membres, bénéficiaires ou clients','montant'=>$depotsGarantieRecus],
+    ['code'=>'G35','lib'=>'Autres dépôts des membres, bénéficiaires ou clients auprès de l\'institution','montant'=>$autresDepotsRecus],
     ['code'=>'G60','lib'=>'Emprunts de l\'institution auprès des membres','montant'=>$empruntsRecusMembres],
-    ['code'=>'G70','lib'=>'Autres sommes dues aux membres','montant'=>$autresSommesDuesMembres],
-    ['code'=>'H10','lib'=>'Versements restant à effectuer','montant'=>$versementsRestant],
-    ['code'=>'H40','lib'=>'Créditeurs divers','montant'=>$crediteursDivers],
-    ['code'=>'G90/F60','lib'=>'Dettes rattachées','montant'=>$dettesRattachees],
-    ['code'=>'N1A','lib'=>'Engagements de financement donnés (inst. financières)','montant'=>$engagementsDonnesInstFin],
-    ['code'=>'N1J','lib'=>'Engagements de financement donnés (membres)','montant'=>$engagementsDonnesMembres],
-    ['code'=>'N2A','lib'=>'Engagements de garantie donnés (inst. financières)','montant'=>$garantiesDonneesInstFin],
-    ['code'=>'N2J','lib'=>'Engagements de garantie donnés (membres)','montant'=>$garantiesDonneesMembres],
+    ['code'=>'G70','lib'=>'Autres sommes dues aux membres, bénéficiaires ou clients','montant'=>$autresSommesDuesMembres],
+    ['code'=>'H10','lib'=>'Versements restant à effectuer à court terme','montant'=>$versementsRestant],
+    ['code'=>'H40','lib'=>'Créditeurs divers à court terme','montant'=>$crediteursDivers],
+    ['code'=>'G90/F60','lib'=>'Dettes rattachées (membres / institutions financières)','montant'=>$dettesRattachees],
+    ['code'=>'N1A','lib'=>'Engagements de financement donnés aux institutions financières','montant'=>$engagementsDonnesInstFin],
+    ['code'=>'N1J','lib'=>'Engagements de financement donnés aux membres, clients et bénéficiaires','montant'=>$engagementsDonnesMembres],
+    ['code'=>'N2A','lib'=>'Engagements de garantie donnés aux institutions financières','montant'=>$garantiesDonneesInstFin],
+    ['code'=>'N2J','lib'=>'Engagements de garantie donnés aux membres, clients et bénéficiaires','montant'=>$garantiesDonneesMembres],
 ];
 
 // ------------------------- EXPORT PDF AVEC PDF_DIMF (via POST) -------------------------
 if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
+    // Nettoyer les buffers pour éviter les erreurs de headers
+    if (ob_get_length()) ob_clean();
+
     class PDF_DIMF extends FPDF {
         public $codeDimf  = 'R05';
         public $titreDimf = 'NORME DE LIQUIDITE';
@@ -443,9 +446,12 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
 
 // ------------------------- EXPORT EXCEL (HTML .xls) VIA POST -------------------------
 if (isset($_POST['export']) && $_POST['export'] === 'excel') {
+    if (ob_get_length()) ob_clean();
+
     header('Content-Type: application/vnd.ms-excel');
     header('Content-Disposition: attachment; filename="R05_' . $exercice . '_' . $type_periode . '.xls"');
     header('Cache-Control: max-age=0');
+
     echo '<html><head><meta charset="UTF-8"><style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         h2 { color: #1a3a5c; font-size: 16pt; }
@@ -461,7 +467,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
 
     // Tableau A
     echo '<h3>A - VALEURS REALISABLES ET DISPONIBLES (durée < 3 mois)</h3>';
-    echo '<td>';
+    echo '<table>';
     echo '<tr><th>Code</th><th>Libellé</th><th class="text-right">Montant (FCFA)</th></tr>';
     foreach ($lignesActifLiquide as $r) {
         echo '<tr><td style="width:15%">' . $r['code'] . '</td><td style="width:70%">' . $r['lib'] . '</td><td class="text-right" style="width:15%">' . number_format($r['montant'], 0, ',', ' ') . '</td></tr>';
@@ -471,7 +477,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
 
     // Tableau B
     echo '<h3>B - PASSIF EXIGIBLE (dettes à court terme, durée < 3 mois)</h3>';
-    echo '<tr>';
+    echo '<table>';
     echo '<tr><th>Code</th><th>Libellé</th><th class="text-right">Montant (FCFA)</th></tr>';
     foreach ($lignesPassifExigible as $r) {
         echo '<tr><td style="width:15%">' . $r['code'] . '</td><td style="width:70%">' . $r['lib'] . '</td><td class="text-right" style="width:15%">' . number_format($r['montant'], 0, ',', ' ') . '</td></tr>';
@@ -492,13 +498,12 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
 <head>
     <meta charset="UTF-8">
     <title>R05 - Norme de liquidité (BCEAO)</title>
-    <!-- Bootstrap 5 CSS (intégré sans modification du design) -->
+    <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Styles personnalisés inchangés -->
     <style>
-        /* Styles DIMF_2000 (identiques aux précédents) */
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family:'Inter',system-ui,sans-serif; background:#f1f5f9; padding:24px; }
         .dashboard { max-width:1400px; margin:0 auto; }
@@ -546,13 +551,12 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
             <div class="badge">Norme BCEAO : Ratio ≥ 1</div>
         </div>
         <div class="btn-group">
-            <!-- Boutons export en POST (via formulaire dynamique JS) -->
             <button class="btn-excel" onclick="submitExport('excel')"><i class="fas fa-file-excel"></i> Excel</button>
             <button class="btn-pdf" onclick="submitExport('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
         </div>
     </div>
 
-    <!-- Formulaire de filtres en POST (remplace l'ancien système GET) -->
+    <!-- Formulaire de filtres en POST -->
     <div class="card" id="filtersCard">
         <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres de période</div>
         <form method="post" id="filterForm">
@@ -575,7 +579,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
                     </select>
                 </div>
                 <div class="filter-item" id="dynamicSelectContainer">
-                    <!-- Contenu dynamique généré par JS, les noms des champs sont 'mois', 'trimestre' ou 'semestre' -->
+                    <!-- Contenu dynamique généré par JS -->
                 </div>
                 <button type="submit" class="btn-apply">Appliquer</button>
             </div>
@@ -595,24 +599,54 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
 
     <!-- Deux colonnes web -->
     <div class="two-columns">
-        <div class="card"><div class="card-header"><i class="fas fa-chart-line"></i> A – VALEURS RÉALISABLES</div><div class="table-wrapper"><table><thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead><tbody><?php foreach($lignesActifLiquide as $r): ?><tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr><?php endforeach; ?><tr class="total-row"><td colspan="2">TOTAL (A)</td><td class="text-right"><?=number_format($montantA,0,',',' ')?></td></tr></tbody></table></div></div>
-        <div class="card"><div class="card-header"><i class="fas fa-chart-line"></i> B – PASSIF EXIGIBLE</div><div class="table-wrapper"><table><thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead><tbody><?php foreach($lignesPassifExigible as $r): ?><tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr><?php endforeach; ?><tr class="total-row"><td colspan="2">TOTAL (B)</td><td class="text-right"><?=number_format($montantB,0,',',' ')?></td></tr></tbody></table></div></div>
+        <div class="card">
+            <div class="card-header"><i class="fas fa-chart-line"></i> A – VALEURS RÉALISABLES ET DISPONIBLES</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead>
+                    <tbody>
+                        <?php foreach($lignesActifLiquide as $r): ?>
+                        <tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="total-row"><td colspan="2">TOTAL (A)</td><td class="text-right"><?=number_format($montantA,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><i class="fas fa-chart-line"></i> B – PASSIF EXIGIBLE</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead>
+                    <tbody>
+                        <?php foreach($lignesPassifExigible as $r): ?>
+                        <tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="total-row"><td colspan="2">TOTAL (B)</td><td class="text-right"><?=number_format($montantB,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- Interprétation -->
-    <div class="card"><div class="card-header">Interprétation</div><div class="info-box"><i class="fas fa-gavel"></i><div><?=($conformite=='CONFORME')?'✓ Conforme – L\'institution dispose de suffisamment d\'actifs liquides pour couvrir ses dettes à court terme (ratio '.number_format($ratioR05,2).' ≥ 1).':'⚠️ Non conforme – Les actifs liquides sont insuffisants (ratio '.number_format($ratioR05,2).' < 1). Risque de liquidité.'?></div></div></div>
+    <div class="card">
+        <div class="card-header">Interprétation</div>
+        <div class="info-box">
+            <i class="fas fa-gavel"></i>
+            <div><?=($conformite=='CONFORME')?'✓ Conforme – L\'institution dispose de suffisamment d\'actifs liquides pour couvrir ses dettes à court terme (ratio '.number_format($ratioR05,2).' ≥ 1).':'⚠️ Non conforme – Les actifs liquides sont insuffisants (ratio '.number_format($ratioR05,2).' < 1). Risque de liquidité.'?></div>
+        </div>
+    </div>
 
     <div class="page-footer"><i class="fas fa-calendar-alt"></i> Généré le <?=date('d/m/Y à H:i:s')?> – Période <?=$exercice?> (<?=ucfirst($type_periode)?>) arrêtée au <?=date('d/m/Y',strtotime($date_fin_periode))?></div>
 </div>
 
-<!-- Scripts : Bootstrap 5 JS + gestion POST -->
+<!-- Scripts -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // Remplissage dynamique du select (mois, trimestre, semestre) avec conservation des valeurs POST
     function updateDynamicSelect() {
         const type = document.getElementById('typePeriodeSelect').value;
         const container = document.getElementById('dynamicSelectContainer');
-        // Valeurs actuelles depuis PHP (transmises par POST)
         const currentMois = <?=$mois?>;
         const currentTrimestre = <?=$trimestre?>;
         const currentSemestre = <?=json_encode($semestre)?>;
@@ -644,7 +678,6 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         container.innerHTML = html;
     }
 
-    // Soumission des exports en POST (réutilisation des valeurs du formulaire principal)
     function submitExport(type) {
         const form = document.getElementById('filterForm');
         const input = document.createElement('input');
@@ -656,7 +689,6 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         form.removeChild(input);
     }
 
-    // Écouteur pour changement de type période
     document.addEventListener('DOMContentLoaded', function() {
         updateDynamicSelect();
         document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect);

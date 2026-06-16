@@ -450,6 +450,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
     }
     echo '<tr class="subtotal-row"><td colspan="2">TOTAL BRUT</td><td class="text-right">' . number_format($totalA_brut, 0, ',', ' ') . '</td></tr>';
     if (!empty($lignesDeductions)) {
+        echo '<tr><td colspan="3" style="background:#f8fafc; font-weight:bold;">ÉLÉMENTS À DÉDUIRE</td></tr>';
         foreach ($lignesDeductions as $d) {
             echo '<tr><td>' . $d['code'] . '</td><td>' . $d['lib'] . '</td><td class="text-right">' . number_format($d['montant'], 0, ',', ' ') . '</td></tr>';
         }
@@ -519,6 +520,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         th { background:#f8fafc; font-weight:600; }
         .text-right { text-align:right; }
         .total-row { background:#f0fdf4; font-weight:700; }
+        .subtotal-row { background:#f8fafc; font-weight:700; }
         .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px; border-radius:16px; display:flex; align-items:center; gap:14px; }
         .two-columns { display:flex; gap:24px; flex-wrap:wrap; }
         .two-columns .card { flex:1; min-width:320px; }
@@ -584,8 +586,81 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
 
     <!-- Deux colonnes web -->
     <div class="two-columns">
-        <div class="card"><div class="card-header"><i class="fas fa-exclamation-triangle"></i> A – RISQUES NETS</div><div class="table-wrapper"><table><thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead><tbody><?php foreach($lignesRisques as $r): ?><tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr><?php endforeach; ?><tr class="total-row"><td colspan="2">TOTAL RISQUES NETS (A)</td><td class="text-right"><?=number_format($montantA,0,',',' ')?></td></tr></tbody></table></div></div>
-        <div class="card"><div class="card-header"><i class="fas fa-coins"></i> B – RESSOURCES</div><div class="table-wrapper"><table><thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead><tbody><?php foreach($lignesRessources as $rs): ?><tr><td><?=$rs['code']?></td><td><?=$rs['lib']?></td><td class="text-right"><?=number_format($rs['montant'],0,',',' ')?></td></tr><?php endforeach; ?><tr class="total-row"><td colspan="2">TOTAL RESSOURCES (B)</td><td class="text-right"><?=number_format($montantB,0,',',' ')?></td></tr></tbody></table></div></div>
+        <div class="card">
+            <div class="card-header"><i class="fas fa-exclamation-triangle"></i> A – RISQUES PORTÉS PAR L'INSTITUTION (MONTANTS NETS DES PROVISIONS)</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Code</th>
+                            <th>Libellé</th>
+                            <th class="text-right">Montant (FCFA)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach($lignesRisques as $r): ?>
+                        <tr>
+                            <td><?= $r['code'] ?></td>
+                            <td><?= $r['lib'] ?></td>
+                            <td class="text-right"><?= number_format($r['montant'], 0, ',', ' ') ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <tr class="subtotal-row">
+                            <td colspan="2"><strong>TOTAL BRUT</strong></td>
+                            <td class="text-right"><strong><?= number_format($totalA_brut, 0, ',', ' ') ?></strong></td>
+                        </tr>
+                        <?php if (!empty($lignesDeductions)): ?>
+                        <tr>
+                            <td colspan="3" style="background:#f8fafc; font-weight:600; padding:8px 16px;">ÉLÉMENTS À DÉDUIRE</td>
+                        </tr>
+                        <?php foreach($lignesDeductions as $d): ?>
+                        <tr>
+                            <td><?= $d['code'] ?></td>
+                            <td><?= $d['lib'] ?></td>
+                            <td class="text-right"><?= number_format($d['montant'], 0, ',', ' ') ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <tr class="total-row">
+                            <td colspan="2"><strong>TOTAL RISQUES NETS (A)</strong></td>
+                            <td class="text-right"><strong><?= number_format($montantA, 0, ',', ' ') ?></strong></td>
+                        </tr>
+                        <?php else: ?>
+                        <tr class="total-row">
+                            <td colspan="2"><strong>TOTAL RISQUES NETS (A)</strong></td>
+                            <td class="text-right"><strong><?= number_format($montantA, 0, ',', ' ') ?></strong></td>
+                        </tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><i class="fas fa-coins"></i> B – RESSOURCES</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Code</th>
+                            <th>Libellé</th>
+                            <th class="text-right">Montant (FCFA)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach($lignesRessources as $rs): ?>
+                        <tr>
+                            <td><?= $rs['code'] ?></td>
+                            <td><?= $rs['lib'] ?></td>
+                            <td class="text-right"><?= number_format($rs['montant'], 0, ',', ' ') ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <tr class="total-row">
+                            <td colspan="2"><strong>TOTAL RESSOURCES (B)</strong></td>
+                            <td class="text-right"><strong><?= number_format($montantB, 0, ',', ' ') ?></strong></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <div class="card"><div class="card-header">Interprétation</div><div class="info-box"><i class="fas fa-gavel"></i><div><?=($conformite=='CONFORME')?'✓ Conforme – Les risques nets représentent '.number_format($pourcentageRisques,2).'% des ressources, ≤200%.':'⚠️ Non conforme – Les risques nets dépassent 200% des ressources.'?></div></div></div>

@@ -1,17 +1,16 @@
 <?php
 // R06.php - Limitation des opérations autres que les activités d'épargne et de crédit
 // Norme BCEAO: 0% à 5% (0 - 0.05)
-// Version avec POST et Bootstrap 5 (design préservé)
+// Version avec POST et Bootstrap 5
 
 session_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
 
-// ------------------------- CONNEXION BDD -------------------------
 require_once('../databases/database.php');
 require_once('../fpdf/fpdf.php');
 
-// ------------------------- LECTURE DES PARAMÈTRES EN POST AVEC DÉFAUTS -------------------------
+// ------------------------- LECTURE DES PARAMÈTRES -------------------------
 $exercice = isset($_POST['exercice']) ? (int)$_POST['exercice'] : date('Y');
 $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode'] : 'annuel';
 $mois = isset($_POST['mois']) ? (int)$_POST['mois'] : 12;
@@ -190,14 +189,14 @@ $totalA_deductions = $depotsGarantieInstFin + $depotsGarantieMembres;
 $risquesNets = $totalA_brut - $totalA_deductions;
 if ($risquesNets <= 0) $risquesNets = 1;
 
-// ------------------------- RATIO R06 -------------------------
+// RATIO
 $ratioR06 = $Z55 / $risquesNets;
 $pourcentage = $ratioR06 * 100;
 $normeMin = 0;
 $normeMax = 0.05;
 $conformite = ($ratioR06 >= $normeMin && $ratioR06 <= $normeMax) ? 'CONFORME' : 'NON_CONFORME';
 
-// ------------------------- PRÉPARATION DES DONNÉES POUR TABLEAUX -------------------------
+// TABLEAUX
 $lignesZ55 = [
     ['code'=>'Z55','lib'=>'Montant consacré par l\'institution aux opérations autres que les activités d\'épargne et de crédit','montant'=>$Z55],
 ];
@@ -208,25 +207,27 @@ $lignesRisques = [
     ['code'=>'A3A','lib'=>'Comptes de prêts','montant'=>$comptesPrets],
     ['code'=>'A70','lib'=>'Prêts en souffrance','montant'=>$pretsSouffrance],
     ['code'=>'B2D','lib'=>'Crédits à court terme','montant'=>$creditsCourtTerme],
-    ['code'=>'B2N','lib'=>'Comptes ordinaires débiteurs des membres','montant'=>$comptesOrdMembres],
+    ['code'=>'B2N','lib'=>'Comptes ordinaires débiteurs des membres, bénéficiaires ou clients','montant'=>$comptesOrdMembres],
     ['code'=>'B30','lib'=>'Crédits à moyen terme','montant'=>$creditsMoyenTerme],
     ['code'=>'B40','lib'=>'Crédits à long terme','montant'=>$creditsLongTerme],
     ['code'=>'B70','lib'=>'Crédits en souffrance','montant'=>$creditsSouffrance],
     ['code'=>'C10','lib'=>'Titres de placement','montant'=>$titresPlacement],
     ['code'=>'D1E','lib'=>'Titres de participation','montant'=>$titresParticipation],
     ['code'=>'D1L','lib'=>'Titres d\'investissement','montant'=>$titresInvestissement],
-    ['code'=>'N1A','lib'=>'Engagements par signature (inst. financières)','montant'=>$engagementsSignature],
-    ['code'=>'N1J','lib'=>'Engagements par signature (membres)','montant'=>$engagementsMembres],
+    ['code'=>'N1A','lib'=>'Engagements par signature donnés en faveur des institutions financières','montant'=>$engagementsSignature],
+    ['code'=>'N1J','lib'=>'Engagements par signature donnés en faveur des membres bénéficiaires ou clients','montant'=>$engagementsMembres],
     ['code'=>'N3A','lib'=>'Engagements de garantie sur titre à livrer','montant'=>$engagementsGarantie],
-    ['code'=>'Q1A','lib'=>'Autres engagements donnés','montant'=>$autresEngagements],
+    ['code'=>'Q1A','lib'=>'Autres engagements donnés par signature','montant'=>$autresEngagements],
 ];
+
 $lignesDeductions = [
     ['code'=>'F2C','lib'=>'Dépôts de Garantie sur les prêts aux institutions financières','montant'=>$depotsGarantieInstFin],
     ['code'=>'G30','lib'=>'Dépôts de Garantie sur les crédits aux membres/clients','montant'=>$depotsGarantieMembres],
 ];
 
-// ------------------------- EXPORT PDF AVEC PDF_DIMF (via POST) -------------------------
+// ------------------------- EXPORT PDF -------------------------
 if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
+    if (ob_get_length()) ob_clean();
 
     class PDF_DIMF extends FPDF {
         public $codeDimf  = 'R06';
@@ -341,7 +342,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
         ['w' => 50, 'label' => 'Montant (FCFA)', 'align' => 'R']
     ];
 
-    // Section A – Montant consacré aux activités hors épargne/crédit
+    // Section A
     $pdf->SectionTitle("A - MONTANT CONSACRE PAR L'INSTITUTION AUX ACTIVITES AUTRES QUE L'EPARGNE ET LE CREDIT");
     $pdf->TableHeader($cols);
     foreach ($lignesZ55 as $row) {
@@ -351,13 +352,19 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
 
     $pdf->Ln(5);
 
-    // Section B – Risques portés par l'institution (nets)
+    // Section B – avec le titre "ÉLÉMENTS À DÉDUIRE"
     $pdf->SectionTitle("B - RISQUES PORTES PAR L'INSTITUTION (MONTANTS NETS DES PROVISIONS ET DES DEPOTS DE GARANTIE)");
     $pdf->TableHeader($cols);
     foreach ($lignesRisques as $row) {
         $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
     }
     $pdf->TableRow($cols, ['', 'TOTAL BRUT', PDF_DIMF::montant($totalA_brut)], 'subtotal');
+
+    // Ajout du titre ÉLÉMENTS À DÉDUIRE
+    $pdf->SetFont('Arial', 'B', 8);
+    $pdf->SetFillColor(230, 240, 255);
+    $pdf->Cell(array_sum(array_column($cols, 'w')), 6, self::u('  ÉLÉMENTS À DÉDUIRE'), 1, 1, 'L', true);
+
     foreach ($lignesDeductions as $row) {
         $pdf->TableRow($cols, [$row['code'], $row['lib'], PDF_DIMF::montant($row['montant'])]);
     }
@@ -374,11 +381,14 @@ if (isset($_POST['export']) && $_POST['export'] === 'pdf') {
     exit;
 }
 
-// ------------------------- EXPORT EXCEL (HTML .xls) VIA POST -------------------------
+// ------------------------- EXPORT EXCEL -------------------------
 if (isset($_POST['export']) && $_POST['export'] === 'excel') {
+    if (ob_get_length()) ob_clean();
+
     header('Content-Type: application/vnd.ms-excel');
     header('Content-Disposition: attachment; filename="R06_' . $exercice . '_' . $type_periode . '.xls"');
     header('Cache-Control: max-age=0');
+
     echo '<html><head><meta charset="UTF-8"><style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         h2 { color: #1a3a5c; font-size: 16pt; }
@@ -389,6 +399,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         .text-right { text-align: right; }
         .total-row { background: #e8f5e9; font-weight: bold; }
         .subtotal-row { background: #f0f7ff; font-weight: bold; }
+        .section-title { background: #d9e8f5; font-weight: bold; }
     </style></head><body>';
     echo '<h2>R06 - LIMITATION DES OPERATIONS AUTRES QUE LES ACTIVITES D\'EPARGNE ET DE CREDIT</h2>';
     echo '<p><strong>Période :</strong> ' . $exercice . ' - ' . ucfirst($type_periode) . ' (arrêtée au ' . date('d/m/Y', strtotime($date_fin_periode)) . ')</p>';
@@ -411,6 +422,10 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         echo '<tr><td style="width:15%">' . $r['code'] . '</td><td style="width:70%">' . $r['lib'] . '</td><td class="text-right">' . number_format($r['montant'], 0, ',', ' ') . '</td></tr>';
     }
     echo '<tr class="subtotal-row"><td colspan="2">TOTAL BRUT</td><td class="text-right">' . number_format($totalA_brut, 0, ',', ' ') . '</td></tr>';
+
+    // Titre ÉLÉMENTS À DÉDUIRE
+    echo '<tr><td colspan="3" class="section-title">ÉLÉMENTS À DÉDUIRE</td></tr>';
+
     foreach ($lignesDeductions as $d) {
         echo '<tr><td style="width:15%">' . $d['code'] . '</td><td style="width:70%">' . $d['lib'] . '</td><td class="text-right">' . number_format($d['montant'], 0, ',', ' ') . '</td></tr>';
     }
@@ -424,20 +439,16 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
     exit;
 }
 
-// ------------------------- AFFICHAGE WEB (INTERFACE DIMF_2000 AVEC BOOTSTRAP 5, DESIGN CONSERVÉ) -------------------------
+// ------------------------- AFFICHAGE WEB -------------------------
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <title>R06 - Limitation des opérations hors épargne/crédit (BCEAO)</title>
-    <!-- Bootstrap 5 CSS (intégré sans modification du design) -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Styles personnalisés inchangés -->
     <style>
-        /* Styles DIMF_2000 (identiques aux précédents) */
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family:'Inter',system-ui,sans-serif; background:#f1f5f9; padding:24px; }
         .dashboard { max-width:1400px; margin:0 auto; }
@@ -469,6 +480,8 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         th { background:#f8fafc; font-weight:600; }
         .text-right { text-align:right; }
         .total-row { background:#f0fdf4; font-weight:700; }
+        .subtotal-row { background:#f8fafc; font-weight:700; }
+        .section-title-row td { background:#d9e8f5; font-weight:bold; padding:8px 16px; }
         .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px; border-radius:16px; display:flex; align-items:center; gap:14px; }
         .two-columns { display:flex; gap:24px; flex-wrap:wrap; }
         .two-columns .card { flex:1; min-width:320px; }
@@ -485,13 +498,12 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
             <div class="badge">Norme BCEAO : 0% ≤ Ratio ≤ 5%</div>
         </div>
         <div class="btn-group">
-            <!-- Boutons export en POST (via formulaire dynamique JS) -->
             <button class="btn-excel" onclick="submitExport('excel')"><i class="fas fa-file-excel"></i> Excel</button>
             <button class="btn-pdf" onclick="submitExport('pdf')"><i class="fas fa-file-pdf"></i> PDF</button>
         </div>
     </div>
 
-    <!-- Formulaire de filtres en POST (remplace l'ancien système GET) -->
+    <!-- Formulaire -->
     <div class="card" id="filtersCard">
         <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres de période et saisie Z55</div>
         <form method="post" id="filterForm">
@@ -513,12 +525,9 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
                         <option value="annuel" <?=$type_periode=='annuel'?'selected':''?>>Annuel</option>
                     </select>
                 </div>
-                <div class="filter-item" id="dynamicSelectContainer">
-                    <!-- Contenu dynamique généré par JS, les noms des champs sont 'mois', 'trimestre' ou 'semestre' -->
-                </div>
+                <div class="filter-item" id="dynamicSelectContainer"></div>
                 <button type="submit" class="btn-apply">Appliquer</button>
             </div>
-            <!-- Saisie manuelle pour Z55 (intégrée au formulaire principal) -->
             <div style="margin-top:12px; padding:8px; background:#fefce8; border-radius:12px;">
                 <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
                     <div class="filter-item">
@@ -531,7 +540,7 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         </form>
     </div>
 
-    <!-- Carte ratio -->
+    <!-- Ratio -->
     <div class="ratio-card">
         <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:20px;">
             <div><div class="card-header" style="padding:0;">Ratio R06 – Opérations hors épargne/crédit</div><div class="ratio-value <?=$conformite=='CONFORME'?'conforme':'non-conforme'?>"><?=number_format($pourcentage,2)?>%</div><div>Z55 / Risques portés nets</div></div>
@@ -542,26 +551,66 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         <div style="margin-top:16px;"><i class="fas fa-calculator"></i> R06 = <?=number_format($Z55,0,',',' ')?> / <?=number_format($risquesNets,0,',',' ')?> = <?=number_format($pourcentage,2)?>%</div>
     </div>
 
-    <!-- Deux colonnes web -->
+    <!-- Deux colonnes -->
     <div class="two-columns">
-        <div class="card"><div class="card-header"><i class="fas fa-chart-simple"></i> A – ACTIVITÉS HORS ÉPARGNE/CRÉDIT</div><div class="table-wrapper">能得到<thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead><tbody><?php foreach($lignesZ55 as $r): ?><tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr><?php endforeach; ?><tr class="total-row"><td colspan="2">TOTAL (A)</td><td class="text-right"><?=number_format($Z55,0,',',' ')?></td></tr></tbody></table></div></div>
-        <div class="card"><div class="card-header"><i class="fas fa-exclamation-triangle"></i> B – RISQUES PORTÉS NETS</div><div class="table-wrapper">能送去<thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead><tbody><?php foreach($lignesRisques as $r): ?><tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr><?php endforeach; ?><tr class="total-row"><td colspan="2">TOTAL RISQUES NETS (B)</td><td class="text-right"><?=number_format($risquesNets,0,',',' ')?></td></tr></tbody></table></div></div>
+        <div class="card">
+            <div class="card-header"><i class="fas fa-chart-simple"></i> A – ACTIVITÉS HORS ÉPARGNE/CRÉDIT</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead>
+                    <tbody>
+                        <?php foreach($lignesZ55 as $r): ?>
+                        <tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="total-row"><td colspan="2">TOTAL (A)</td><td class="text-right"><?=number_format($Z55,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header"><i class="fas fa-exclamation-triangle"></i> B – RISQUES PORTÉS NETS</div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th>Code</th><th>Libellé</th><th class="text-right">Montant</th></tr></thead>
+                    <tbody>
+                        <?php foreach($lignesRisques as $r): ?>
+                        <tr><td><?=$r['code']?></td><td><?=$r['lib']?></td><td class="text-right"><?=number_format($r['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="subtotal-row"><td colspan="2">TOTAL BRUT</td><td class="text-right"><?=number_format($totalA_brut,0,',',' ')?></td></tr>
+
+                        <!-- Titre ÉLÉMENTS À DÉDUIRE -->
+                        <tr class="section-title-row"><td colspan="3">ÉLÉMENTS À DÉDUIRE</td></tr>
+
+                        <?php foreach($lignesDeductions as $d): ?>
+                        <tr><td><?=$d['code']?></td><td><?=$d['lib']?></td><td class="text-right"><?=number_format($d['montant'],0,',',' ')?></td></tr>
+                        <?php endforeach; ?>
+                        <tr class="subtotal-row"><td colspan="2">TOTAL DÉDUCTIONS</td><td class="text-right"><?=number_format($totalA_deductions,0,',',' ')?></td></tr>
+                        <tr class="total-row"><td colspan="2">TOTAL RISQUES NETS (B)</td><td class="text-right"><?=number_format($risquesNets,0,',',' ')?></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- Interprétation -->
-    <div class="card"><div class="card-header">Interprétation</div><div class="info-box"><i class="fas fa-gavel"></i><div><?=($conformite=='CONFORME')?'✓ Conforme – Les activités hors épargne/crédit représentent '.number_format($pourcentage,2).'% des risques portés, ≤5%.':'⚠️ Non conforme – Ce taux dépasse 5%, l\'institution doit réduire ses activités non financières.'?></div></div></div>
+    <div class="card">
+        <div class="card-header">Interprétation</div>
+        <div class="info-box">
+            <i class="fas fa-gavel"></i>
+            <div><?=($conformite=='CONFORME')?'✓ Conforme – Les activités hors épargne/crédit représentent '.number_format($pourcentage,2).'% des risques portés, ≤5%.':'⚠️ Non conforme – Ce taux dépasse 5%, l\'institution doit réduire ses activités non financières.'?></div>
+        </div>
+    </div>
 
     <div class="page-footer"><i class="fas fa-calendar-alt"></i> Généré le <?=date('d/m/Y à H:i:s')?> – Période <?=$exercice?> (<?=ucfirst($type_periode)?>) arrêtée au <?=date('d/m/Y',strtotime($date_fin_periode))?></div>
 </div>
 
-<!-- Scripts : Bootstrap 5 JS + gestion POST -->
+<!-- Scripts -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // Remplissage dynamique du select (mois, trimestre, semestre) avec conservation des valeurs POST
     function updateDynamicSelect() {
         const type = document.getElementById('typePeriodeSelect').value;
         const container = document.getElementById('dynamicSelectContainer');
-        // Valeurs actuelles depuis PHP (transmises par POST)
         const currentMois = <?=$mois?>;
         const currentTrimestre = <?=$trimestre?>;
         const currentSemestre = <?=json_encode($semestre)?>;
@@ -593,7 +642,6 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         container.innerHTML = html;
     }
 
-    // Soumission des exports en POST (réutilisation des valeurs du formulaire principal)
     function submitExport(type) {
         const form = document.getElementById('filterForm');
         const input = document.createElement('input');
@@ -605,7 +653,6 @@ if (isset($_POST['export']) && $_POST['export'] === 'excel') {
         form.removeChild(input);
     }
 
-    // Écouteur pour changement de type période
     document.addEventListener('DOMContentLoaded', function() {
         updateDynamicSelect();
         document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect);
