@@ -1,6 +1,6 @@
 <?php
 // 13-MouvementsActifs.php - Acquisitions et cessions d'actifs
-// Suivi des immobilisations (acquisitions, cessions, amortissements)
+// Version alignée sur le fichier 13.xlsx (uniquement le tableau des mouvements)
 
 session_start();
 
@@ -16,7 +16,7 @@ $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode'] : (isset(
 $mois         = isset($_POST['mois']) ? (int)$_POST['mois'] : (isset($_SESSION['mouv_mois']) ? $_SESSION['mouv_mois'] : 12);
 $trimestre    = isset($_POST['trimestre']) ? (int)$_POST['trimestre'] : (isset($_SESSION['mouv_trimestre']) ? $_SESSION['mouv_trimestre'] : 4);
 $semestre     = isset($_POST['semestre']) ? (int)$_POST['semestre'] : (isset($_SESSION['mouv_semestre']) ? $_SESSION['mouv_semestre'] : 2);
-$format       = isset($_POST['format']) ? $_POST['format'] : (isset($_SESSION['mouv_format']) ? $_SESSION['mouv_format'] : 'html');
+$format       = isset($_POST['format']) ? $_POST['format'] : 'html';
 
 // Sauvegarde en session
 $_SESSION['mouv_exercice'] = $exercice;
@@ -24,7 +24,6 @@ $_SESSION['mouv_type_periode'] = $type_periode;
 $_SESSION['mouv_mois'] = $mois;
 $_SESSION['mouv_trimestre'] = $trimestre;
 $_SESSION['mouv_semestre'] = $semestre;
-$_SESSION['mouv_format'] = $format;
 
 // Calcul de la période
 switch ($type_periode) {
@@ -46,18 +45,18 @@ switch ($type_periode) {
 }
 
 // ============================================================
-// CATÉGORIES D'IMMOBILISATIONS
+// CATÉGORIES D'IMMOBILISATIONS (libellés exacts du fichier 13.xlsx)
 // ============================================================
 $categories = [
     'brevets_logiciels' => ['libelle' => 'Brevets, licences, logiciels et droits similaires', 'comptes' => ['205', '206', '207']],
     'recherche_developpement' => ['libelle' => 'Recherche et développement', 'comptes' => ['203']],
     'terrains' => ['libelle' => 'Terrains', 'comptes' => ['211']],
-    'batiments' => ['libelle' => 'Bâtiments', 'comptes' => ['212', '213']],
+    'batiments' => ['libelle' => 'Bâtiment', 'comptes' => ['212', '213']],
     'installations_agencements' => ['libelle' => 'Installations et agencements', 'comptes' => ['215', '2184']],
     'mobilier_bureau' => ['libelle' => 'Mobilier de bureau', 'comptes' => ['2181', '2183']],
-    'materiel_informatique' => ['libelle' => 'Matériel informatique', 'comptes' => ['2182']],
+    'materiel_informatique' => ['libelle' => 'Matériel informatiques', 'comptes' => ['2182']],
     'materiel_transport' => ['libelle' => 'Matériel de transport', 'comptes' => ['2185']],
-    'autres_materiels' => ['libelle' => 'Autres matériels', 'comptes' => ['2186', '2187', '2188']]
+    'autres_materiels' => ['libelle' => 'Autres matetriels', 'comptes' => ['2186', '2187', '2188']]
 ];
 
 // ============================================================
@@ -110,53 +109,6 @@ $total_ouverture = array_sum(array_column($data, 'montant_ouverture'));
 $total_acquisitions = array_sum(array_column($data, 'acquisitions'));
 $total_cessions = array_sum(array_column($data, 'cessions'));
 $total_cloture = array_sum(array_column($data, 'montant_cloture'));
-
-// Détails acquisitions
-$detailsAcquisitions = [];
-try {
-    $stmtDetails = $pdo->prepare("
-        SELECT e.date_ecriture, e.numero_piece, e.libelle_ecriture, e.compte_general, pc.libelle_compte, e.montant_debit as montant
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE (e.compte_general LIKE '21%' OR e.compte_general LIKE '22%' OR e.compte_general LIKE '23%')
-          AND e.date_ecriture BETWEEN :date_debut AND :date_fin AND e.montant_debit > 0
-        ORDER BY e.date_ecriture DESC LIMIT 50
-    ");
-    $stmtDetails->execute([':date_debut' => $date_debut_exercice, ':date_fin' => $date_fin_exercice]);
-    $detailsAcquisitions = $stmtDetails->fetchAll();
-} catch (PDOException $e) { }
-
-// Détails cessions
-$detailsCessions = [];
-try {
-    $stmtCessionsDetails = $pdo->prepare("
-        SELECT e.date_ecriture, e.numero_piece, e.libelle_ecriture, e.compte_general, pc.libelle_compte, e.montant_credit as montant
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE (e.compte_general LIKE '21%' OR e.compte_general LIKE '22%' OR e.compte_general LIKE '23%')
-          AND e.date_ecriture BETWEEN :date_debut AND :date_fin AND e.montant_credit > 0
-        ORDER BY e.date_ecriture DESC LIMIT 50
-    ");
-    $stmtCessionsDetails->execute([':date_debut' => $date_debut_exercice, ':date_fin' => $date_fin_exercice]);
-    $detailsCessions = $stmtCessionsDetails->fetchAll();
-} catch (PDOException $e) { }
-
-// Amortissements
-$total_amortissements_exercice = 0;
-try {
-    $stmtAmort = $pdo->prepare("SELECT COALESCE(SUM(dotation_mois), 0) as total_amort FROM amortissements WHERE exercice = :exercice");
-    $stmtAmort->execute([':exercice' => $exercice]);
-    $total_amortissements_exercice = (float)$stmtAmort->fetch()['total_amort'];
-} catch (PDOException $e) { }
-
-$valeur_nette_totale = $total_cloture - $total_amortissements_exercice;
-
-// ============================================================
-// FONCTION FORMATAGE
-// ============================================================
-function format_montant($val) {
-    return number_format((float)$val, 0, ',', ' ') . ' F';
-}
 
 // ============================================================
 // EXPORT PDF
@@ -220,7 +172,7 @@ if ($format === 'pdf') {
             if ($style == 'total') {
                 $this->SetFont('Arial', 'B', 8);
                 $this->SetFillColor(240, 253, 244);
-            $this->SetTextColor(0, 0, 0);
+                $this->SetTextColor(0, 0, 0);
                 $fill = true;
             } else {
                 $this->SetFont('Arial', '', 8);
@@ -249,14 +201,14 @@ if ($format === 'pdf') {
     
     // Tableau principal
     $cols = [
-        ['label' => 'CATEGORIE D\'IMMOBILISATION', 'w' => 80, 'align' => 'L'],
-        ['label' => 'Montant ouverture', 'w' => 45, 'align' => 'R'],
-        ['label' => 'Acquisitions', 'w' => 45, 'align' => 'R'],
-        ['label' => 'Cessions', 'w' => 45, 'align' => 'R'],
-        ['label' => 'Montant cloture', 'w' => 45, 'align' => 'R']
+        ['label' => 'RUBRIQUES', 'w' => 80, 'align' => 'L'],
+        ['label' => 'Montant à l\'ouverture de l\'exercice', 'w' => 45, 'align' => 'R'],
+        ['label' => 'Acquisitions Apports/Créations', 'w' => 45, 'align' => 'R'],
+        ['label' => 'Cessions/Scissions Hors service', 'w' => 45, 'align' => 'R'],
+        ['label' => 'Montant à la cloture de l\'exercice', 'w' => 45, 'align' => 'R']
     ];
     
-    $pdf->SectionTitle('FORMATION BRUTE DU CAPITAL FIXE (En FCFA)');
+    $pdf->SectionTitle('FORMATION BRUTE DU CAPITAL FIXE - SITUATIONS ET MOUVEMENTS (En F CFA)');
     $pdf->TableHeader($cols);
     
     foreach ($data as $item) {
@@ -277,22 +229,18 @@ if ($format === 'pdf') {
         $pdf->montant($total_cloture)
     ], 'total');
     
-    $pdf->Ln(8);
-    
-    // Amortissements
-    $pdf->SectionTitle('AMORTISSEMENTS DE L\'EXERCICE');
-    $pdf->SetFont('Arial', '', 9);
-    $pdf->Cell(80, 7, 'Amortissements cumules de l\'exercice :', 0, 0);
-    $pdf->Cell(0, 7, $pdf->montant($total_amortissements_exercice), 0, 1);
-    $pdf->Cell(80, 7, 'Valeur brute des immobilisations (cloture) :', 0, 0);
-    $pdf->Cell(0, 7, $pdf->montant($total_cloture), 0, 1);
-    $pdf->SetFont('Arial', 'B', 9);
-    $pdf->Cell(80, 7, 'Valeur nette des immobilisations (cloture) :', 0, 0);
-    $pdf->Cell(0, 7, $pdf->montant($valeur_nette_totale), 0, 1);
-    
     $pdf->Output('I', '13_MOUVEMENTS_ACTIFS_' . $exercice . '.pdf');
     exit;
 }
+
+// ============================================================
+// EXPORT EXCEL (via JavaScript)
+// ============================================================
+// (Géré par le bouton Excel, code JavaScript en bas)
+
+// ============================================================
+// AFFICHAGE WEB
+// ============================================================
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -300,7 +248,6 @@ if ($format === 'pdf') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>13 - Acquisitions et cessions d'actifs</title>
-    <!-- Bootstrap 5 CSS uniquement ajouté sans modifier le design -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -341,20 +288,6 @@ if ($format === 'pdf') {
         td { padding: 10px 16px; border-bottom: 1px solid #f1f5f9; color: #0f172a; }
         .text-right { text-align: right; font-family: 'Courier New', monospace; font-weight: 500; }
         .total-row { background: #f0fdf4; font-weight: 700; border-top: 2px solid #bbf7d0; }
-        .acquisition { color: #16a34a; }
-        .cession { color: #dc2626; }
-        
-        .info-box { background: #eef2ff; border-left: 4px solid #3b82f6; padding: 16px 20px; border-radius: 16px; display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
-        .alert { padding: 14px 20px; border-radius: 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px; }
-        
-        .stats-row { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 20px; }
-        .stat-card { flex: 1; background: #f8fafc; border-radius: 16px; padding: 20px; text-align: center; border-top: 3px solid #3b82f6; }
-        .stat-card .value { font-size: 1.8rem; font-weight: 700; color: #1e293b; }
-        .stat-card .label { font-size: 0.8rem; color: #64748b; margin-top: 5px; }
-        
-        .progress-bar { background: #e2e8f0; border-radius: 10px; height: 30px; overflow: hidden; margin-top: 20px; }
-        .progress-bar .progress-ouverture { background: #1e40af; height: 100%; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.7rem; float: left; }
-        .progress-bar .progress-acquisitions { background: #16a34a; height: 100%; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.7rem; float: left; }
         
         .footer { text-align: center; font-size: 0.75rem; color: #6b7280; margin-top: 16px; padding: 16px; }
         
@@ -362,7 +295,6 @@ if ($format === 'pdf') {
             body { padding: 12px; }
             .filters-row { flex-direction: column; align-items: stretch; }
             .btn-group { flex-wrap: wrap; }
-            .stats-row { flex-direction: column; }
             th, td { padding: 8px 12px; font-size: 0.75rem; }
         }
         
@@ -447,17 +379,17 @@ if ($format === 'pdf') {
 
     <!-- Tableau principal -->
     <div class="card">
-        <div class="card-header"><i class="fas fa-chart-line"></i> FORMATION BRUTE DU CAPITAL FIXE (En FCFA)</div>
+        <div class="card-header"><i class="fas fa-chart-line"></i> FORMATION BRUTE DU CAPITAL FIXE - SITUATIONS ET MOUVEMENTS (En F CFA)</div>
         <div class="card-body">
             <div class="table-wrapper">
                 <table>
                     <thead>
                         <tr>
-                            <th>CATEGORIE D'IMMOBILISATION</th>
-                            <th class="text-right">Montant a l'ouverture</th>
-                            <th class="text-right">Acquisitions / Apports</th>
-                            <th class="text-right">Cessions / Scissions</th>
-                            <th class="text-right">Montant a la cloture</th>
+                            <th>Rubriques</th>
+                            <th class="text-right">Montant à l'ouverture de l'exercice</th>
+                            <th class="text-right">Acquisitions Apports/Créations</th>
+                            <th class="text-right">Cessions/Scissions Hors service</th>
+                            <th class="text-right">Montant à la cloture de l'exercice</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -465,8 +397,8 @@ if ($format === 'pdf') {
                         <tr>
                             <td><?= htmlspecialchars($item['libelle']) ?></td>
                             <td class="text-right"><?= number_format($item['montant_ouverture'], 0, ',', ' ') ?></td>
-                            <td class="text-right acquisition"><?= number_format($item['acquisitions'], 0, ',', ' ') ?></td>
-                            <td class="text-right cession"><?= number_format($item['cessions'], 0, ',', ' ') ?></td>
+                            <td class="text-right"><?= number_format($item['acquisitions'], 0, ',', ' ') ?></td>
+                            <td class="text-right"><?= number_format($item['cessions'], 0, ',', ' ') ?></td>
                             <td class="text-right"><?= number_format($item['montant_cloture'], 0, ',', ' ') ?></td>
                         </tr>
                         <?php endforeach; ?>
@@ -479,114 +411,6 @@ if ($format === 'pdf') {
                         </tr>
                     </tbody>
                 </table>
-            </div>
-        </div>
-    </div>
-
-    <!-- Amortissements -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-chart-simple"></i> AMORTISSEMENTS DE L'EXERCICE</div>
-        <div class="card-body">
-            <div class="info-box">
-                <i class="fas fa-calculator"></i>
-                <div>
-                    <strong>Amortissements cumules de l'exercice :</strong> <?= number_format($total_amortissements_exercice, 0, ',', ' ') ?> FCFA<br>
-                    <strong>Valeur brute des immobilisations (cloture) :</strong> <?= number_format($total_cloture, 0, ',', ' ') ?> FCFA<br>
-                    <strong style="font-size:1.1rem;">Valeur nette des immobilisations (cloture) :</strong> <?= number_format($valeur_nette_totale, 0, ',', ' ') ?> FCFA
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Graphique evolution -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-chart-bar"></i> EVOLUTION DES IMMOBILISATIONS</div>
-        <div class="card-body">
-            <div class="stats-row">
-                <div class="stat-card">
-                    <div class="value"><?= number_format($total_ouverture, 0, ',', ' ') ?> F</div>
-                    <div class="label">Ouverture</div>
-                </div>
-                <div class="stat-card">
-                    <div class="value" style="color:#16a34a;">+ <?= number_format($total_acquisitions, 0, ',', ' ') ?> F</div>
-                    <div class="label">Acquisitions</div>
-                </div>
-                <div class="stat-card">
-                    <div class="value" style="color:#dc2626;">- <?= number_format($total_cessions, 0, ',', ' ') ?> F</div>
-                    <div class="label">Cessions</div>
-                </div>
-                <div class="stat-card">
-                    <div class="value"><?= number_format($total_cloture, 0, ',', ' ') ?> F</div>
-                    <div class="label">Cloture</div>
-                </div>
-            </div>
-            
-            <?php $max_value = max($total_ouverture, $total_cloture, 1); ?>
-            <div class="progress-bar">
-                <div class="progress-ouverture" style="width: <?= ($total_ouverture / $max_value) * 100 ?>%;">
-                    Ouverture
-                </div>
-                <div class="progress-acquisitions" style="width: <?= (($total_cloture - $total_ouverture) / $max_value) * 100 ?>%;">
-                    + Acquisitions
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Détail acquisitions -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-arrow-down"></i> DETAIL DES ACQUISITIONS DE L'EXERCICE</div>
-        <div class="card-body">
-            <div class="table-wrapper">
-                <?php if(empty($detailsAcquisitions)): ?>
-                    <div class="info-box">Aucune acquisition enregistree pour l'exercice <?= $exercice ?>.</div>
-                <?php else: ?>
-                    <table>
-                        <thead>
-                            <tr><th>Date</th><th>N° piece</th><th>Libelle</th><th>Compte</th><th class="text-right">Montant (FCFA)</th></tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach($detailsAcquisitions as $acq): ?>
-                            <tr>
-                                <td><?= date('d/m/Y', strtotime($acq['date_ecriture'])) ?></td>
-                                <td><?= htmlspecialchars($acq['numero_piece'] ?? '-') ?></td>
-                                <td><?= htmlspecialchars($acq['libelle_ecriture']) ?></td>
-                                <td><?= htmlspecialchars($acq['compte_general'] . ' - ' . substr($acq['libelle_compte'] ?? '', 0, 30)) ?></td>
-                                <td class="text-right acquisition"><?= number_format($acq['montant'], 0, ',', ' ') ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                <?php endif; ?>
-            </div>
-        </div>
-    </div>
-
-    <!-- Détail cessions -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-arrow-up"></i> DETAIL DES CESSIONS DE L'EXERCICE</div>
-        <div class="card-body">
-            <div class="table-wrapper">
-                <?php if(empty($detailsCessions)): ?>
-                    <div class="info-box">Aucune cession enregistree pour l'exercice <?= $exercice ?>.</div>
-                <?php else: ?>
-                    <table>
-                        <thead>
-                            <tr><th>Date</th><th>N° piece</th><th>Libelle</th><th>Compte</th><th class="text-right">Montant (FCFA)</th></tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach($detailsCessions as $ces): ?>
-                            <tr>
-                                <td><?= date('d/m/Y', strtotime($ces['date_ecriture'])) ?></td>
-                                <td><?= htmlspecialchars($ces['numero_piece'] ?? '-') ?></td>
-                                <td><?= htmlspecialchars($ces['libelle_ecriture']) ?></td>
-                                <td><?= htmlspecialchars($ces['compte_general'] . ' - ' . substr($ces['libelle_compte'] ?? '', 0, 30)) ?></td>
-                                <td class="text-right cession"><?= number_format($ces['montant'], 0, ',', ' ') ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                <?php endif; ?>
             </div>
         </div>
     </div>
@@ -634,18 +458,6 @@ if ($format === 'pdf') {
         container.innerHTML = html;
     }
 
-    function appliquerFiltres() {
-        const exercice = document.getElementById('exerciceSelect').value;
-        const type = document.getElementById('typePeriodeSelect').value;
-        let url = '13mouv.php?exercice=' + exercice + '&type_periode=' + type;
-        
-        if (type === 'mensuel') url += '&mois=' + document.getElementById('moisSelect').value;
-        if (type === 'trimestre') url += '&trimestre=' + document.getElementById('trimestreSelect').value;
-        if (type === 'semestre') url += '&semestre=' + document.getElementById('semestreSelect').value;
-        
-        window.location.href = url;
-    }
-
     function exporterExcel() {
         const wb = XLSX.utils.book_new();
         
@@ -653,7 +465,7 @@ if ($format === 'pdf') {
             ['13 - ACQUISITIONS ET CESSIONS D\'ACTIFS'],
             ['Periode : <?= addslashes($lib_periode) ?>'],
             [],
-            ['CATEGORIE D\'IMMOBILISATION', 'Montant ouverture (FCFA)', 'Acquisitions (FCFA)', 'Cessions (FCFA)', 'Montant cloture (FCFA)']
+            ['Rubriques', 'Montant à l\'ouverture de l\'exercice', 'Acquisitions Apports/Créations', 'Cessions/Scissions Hors service', 'Montant à la cloture de l\'exercice']
         ];
         
         <?php foreach ($data as $item): ?>
@@ -667,11 +479,6 @@ if ($format === 'pdf') {
         <?php endforeach; ?>
         
         data.push(['TOTAL', <?= $total_ouverture ?>, <?= $total_acquisitions ?>, <?= $total_cessions ?>, <?= $total_cloture ?>]);
-        data.push([]);
-        data.push(['AMORTISSEMENTS', '']);
-        data.push(['Amortissements cumules de l\'exercice', <?= $total_amortissements_exercice ?>]);
-        data.push(['Valeur brute des immobilisations (cloture)', <?= $total_cloture ?>]);
-        data.push(['Valeur nette des immobilisations (cloture)', <?= $valeur_nette_totale ?>]);
         
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(data), "MOUVEMENTS_ACTIFS");
         XLSX.writeFile(wb, '13_MOUVEMENTS_ACTIFS_<?= $exercice ?>.xlsx');

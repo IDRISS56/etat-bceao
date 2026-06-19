@@ -85,12 +85,12 @@ class bceaoController {
         include "rapports/R10.php";
     }
 
-    public function R(){
+    public function normePrudentielle(){
 
 
 
     
-        include "rapports/Ratio_resume.php";
+        include "rapports/norme_prudentielle.php";
     }
 
 
@@ -117,12 +117,12 @@ class bceaoController {
     // ETATS FINANCIERS ET ANNEXES
 
 
-    public function annex_rap(){
+    public function annexRapport(){
 
 
 
     
-        include "rapports/annex_rap.php";
+        include "rapports/annex_rapport.php";
     }
 
     public function indicateur(){
@@ -145,28 +145,28 @@ class bceaoController {
     // MOUVEMENTS ET STATISTIQUES (13 à 15)
 
 
-    public function treizemouv(){
+    public function mouvementActif(){
 
 
 
     
-        include "rapports/13mouv.php";
+        include "rapports/13mouvement_actif.php";
     }
 
-    public function quatorzestat(){
+    public function statPointService(){
 
 
 
     
-        include "rapports/14stat.php";
+        include "rapports14stat_point_service.php";
     }
 
-    public function quinze(){
+    public function commissaireComptes(){
 
 
 
     
-        include "rapports/15.php";
+        include "rapports/15commissaire_comptes.php";
     }
 
 

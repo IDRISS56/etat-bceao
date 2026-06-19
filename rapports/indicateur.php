@@ -1,11 +1,11 @@
 <?php
 // INDICATEURS_FINANCIERS_ACTIVI.php - Indicateurs financiers d'activité
 // Déclaration SICS-BCEAO
-// Version avec POST et Bootstrap 5 (design préservé)
+// Version avec POST et Bootstrap 5
+// Tableau complet conforme à IND.xlsx
 
 session_start();
 
-// Configuration BDD
 require_once '../databases/database.php';
 require_once '../fpdf/fpdf.php';
 
@@ -19,7 +19,6 @@ $trimestre    = isset($_POST['trimestre'])    ? (int)$_POST['trimestre']    : 4;
 $semestre     = isset($_POST['semestre'])     ? (int)$_POST['semestre']     : 2;
 $format       = isset($_POST['format'])       ? $_POST['format']            : 'html';
 
-// Calcul du mois en fonction du type de période
 switch ($type_periode) {
     case 'trimestre': $mois = $trimestre * 3; break;
     case 'semestre':  $mois = ($semestre == 1) ? 6 : 12; break;
@@ -33,7 +32,7 @@ $date_fin_exercice = $exercice . '-12-31';
 $exercice_prec = $exercice - 1;
 $date_fin_prec = $exercice_prec . '-12-31';
 
-// Libellé de la période pour l'affichage
+// Libellé de la période
 switch ($type_periode) {
     case 'mensuel':   $lib_periode = 'Mois ' . str_pad($mois,2,'0',STR_PAD_LEFT) . '/' . $exercice; break;
     case 'trimestre': $lib_periode = $trimestre . 'e Trim. ' . $exercice; break;
@@ -42,10 +41,10 @@ switch ($type_periode) {
 }
 
 // ============================================================
-// I-1 - INDICATEURS DE QUALITÉ DU PORTEFEUILLE
+// CALCUL DES INDICATEURS (tous les montants nécessaires)
 // ============================================================
 
-// Portefeuille total (encours brut des crédits)
+// Portefeuille total (encours brut des crédits sains + souffrance)
 $portefeuille_total = 0;
 try {
     $stmt = $pdo->prepare("
@@ -53,13 +52,13 @@ try {
         FROM dossiers d
         LEFT JOIN (SELECT dossier_id, SUM(montant) as rembourse FROM echeances WHERE statut = 'payee' GROUP BY dossier_id) e 
         ON d.dossier_id = e.dossier_id
-        WHERE d.statut IN ('actif', 'approuve')
+        WHERE d.statut IN ('actif', 'approuve', 'impaye')
     ");
     $stmt->execute();
     $portefeuille_total = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $portefeuille_total = 0; }
 
-// Créances en souffrance
+// Créances en souffrance (impayés)
 $encours_souffrance = 0;
 try {
     $stmt = $pdo->prepare("
@@ -73,7 +72,7 @@ try {
     $encours_souffrance = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $encours_souffrance = 0; }
 
-// Provisions constituées
+// Provisions constituées sur créances en souffrance
 $provisions_creances = 0;
 try {
     $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant), 0) as total FROM provisions WHERE statut = 'actif' AND type_provision = 'CREANCES'");
@@ -81,10 +80,7 @@ try {
     $provisions_creances = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $provisions_creances = 0; }
 
-$par_30 = ($portefeuille_total > 0) ? $encours_souffrance / $portefeuille_total : 0;
-$taux_provision = ($encours_souffrance > 0) ? $provisions_creances / $encours_souffrance : 0;
-
-// Pertes sur créances
+// Pertes sur créances enregistrées (comptes 657)
 $pertes_creances = 0;
 try {
     $stmt = $pdo->prepare("
@@ -97,29 +93,34 @@ try {
     $pertes_creances = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $pertes_creances = 0; }
 
-$taux_perte = ($portefeuille_total > 0) ? $pertes_creances / $portefeuille_total : 0;
+// Portefeuille précédent (pour les moyennes)
+$portefeuille_prec = 0;
+try {
+    $stmt = $pdo->prepare("
+        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse, 0)), 0) as total
+        FROM dossiers d
+        LEFT JOIN (SELECT dossier_id, SUM(montant) as rembourse FROM echeances WHERE statut = 'payee' AND date_echeance <= :date_fin GROUP BY dossier_id) e 
+        ON d.dossier_id = e.dossier_id
+        WHERE d.statut IN ('actif', 'approuve', 'impaye') AND d.date_octroi <= :date_fin
+    ");
+    $stmt->execute([':date_fin' => $date_fin_prec]);
+    $portefeuille_prec = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) { $portefeuille_prec = 0; }
+$portefeuille_moyen = ($portefeuille_total + $portefeuille_prec) / 2;
 
-// ============================================================
-// I-2 - INDICATEURS D'ACTIVITÉS
-// ============================================================
-
+// Activités
 $total_decaissements = 0;
 $nb_decaissements = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COUNT(*) as nb, COALESCE(SUM(montant), 0) as total
-        FROM dossiers
-        WHERE date_octroi BETWEEN :debut AND :fin
-          AND statut IN ('actif', 'approuve')
-    ");
+    $stmt = $pdo->prepare("SELECT COUNT(*) as nb, COALESCE(SUM(montant), 0) as total FROM dossiers WHERE date_octroi BETWEEN :debut AND :fin AND statut IN ('actif', 'approuve')");
     $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
     $result = $stmt->fetch();
     $nb_decaissements = (int)$result['nb'];
     $total_decaissements = (float)$result['total'];
-} catch (PDOException $e) { $nb_decaissements = 0; $total_decaissements = 0; }
-
+} catch (PDOException $e) { }
 $montant_moyen_credit = ($nb_decaissements > 0) ? $total_decaissements / $nb_decaissements : 0;
 
+// Épargne
 $total_epargne = 0;
 $nb_epargnants = 0;
 try {
@@ -142,10 +143,10 @@ try {
     ");
     $stmt->execute();
     $nb_epargnants = (int)$stmt->fetch()['nb'];
-} catch (PDOException $e) { $total_epargne = 0; $nb_epargnants = 0; }
-
+} catch (PDOException $e) { }
 $montant_moyen_epargne = ($nb_epargnants > 0) ? $total_epargne / $nb_epargnants : 0;
 
+// Emprunteurs actifs
 $nb_emprunteurs = 0;
 try {
     $stmt = $pdo->prepare("
@@ -153,25 +154,20 @@ try {
         FROM dossiers d
         INNER JOIN comptes cpt ON d.compte_id = cpt.compte_id
         INNER JOIN clients c ON cpt.client_id = c.client_id
-        WHERE d.statut IN ('actif', 'approuve')
+        WHERE d.statut IN ('actif', 'approuve', 'impaye')
     ");
     $stmt->execute();
     $nb_emprunteurs = (int)$stmt->fetch()['nb'];
 } catch (PDOException $e) { $nb_emprunteurs = 0; }
-
 $encours_moyen_emprunteur = ($nb_emprunteurs > 0) ? $portefeuille_total / $nb_emprunteurs : 0;
 
-// ============================================================
-// I-3 - INDICATEURS D'EFFICACITÉ/PRODUCTIVITÉ
-// ============================================================
-
+// Efficacité / Productivité
 $nb_agents_credit = 0;
 try {
     $stmt = $pdo->prepare("SELECT COUNT(*) as nb FROM utilisateurs WHERE role IN ('Gestionnaire', 'Caisse') AND etat = 'actif'");
     $stmt->execute();
     $nb_agents_credit = (int)$stmt->fetch()['nb'];
 } catch (PDOException $e) { $nb_agents_credit = 0; }
-
 $productivite_agents = ($nb_agents_credit > 0) ? $nb_emprunteurs / $nb_agents_credit : 0;
 
 $nb_employes = 0;
@@ -180,175 +176,216 @@ try {
     $stmt->execute();
     $nb_employes = (int)$stmt->fetch()['nb'];
 } catch (PDOException $e) { $nb_employes = 0; }
+$nb_clients_actifs = 0;
+try {
+    $stmt = $pdo->prepare("SELECT COUNT(DISTINCT client_id) as nb FROM clients WHERE statut = 'actif'");
+    $stmt->execute();
+    $nb_clients_actifs = (int)$stmt->fetch()['nb'];
+} catch (PDOException $e) { $nb_clients_actifs = 0; }
+$productivite_personnel = ($nb_employes > 0) ? $nb_clients_actifs / $nb_employes : 0;
 
-$productivite_personnel = ($nb_employes > 0) ? ($nb_emprunteurs + $nb_epargnants) / $nb_employes : 0;
-
+// Charges d'exploitation (classe 6)
 $charges_exploitation = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.classe_compte = '6' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_debit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.classe_compte = '6' AND e.date_ecriture BETWEEN :debut AND :fin");
     $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
     $charges_exploitation = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $charges_exploitation = 0; }
 
-$portefeuille_prec = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(d.montant - COALESCE(e.rembourse, 0)), 0) as total
-        FROM dossiers d
-        LEFT JOIN (SELECT dossier_id, SUM(montant) as rembourse FROM echeances WHERE statut = 'payee' AND date_echeance <= :date_fin GROUP BY dossier_id) e 
-        ON d.dossier_id = e.dossier_id
-        WHERE d.statut IN ('actif', 'approuve') AND d.date_octroi <= :date_fin
-    ");
-    $stmt->execute([':date_fin' => $date_fin_prec]);
-    $portefeuille_prec = (float)$stmt->fetch()['total'];
-} catch (PDOException $e) { $portefeuille_prec = 0; }
-
-$portefeuille_moyen = ($portefeuille_total + $portefeuille_prec) / 2;
 $ratio_charges_portefeuille = ($portefeuille_moyen > 0) ? $charges_exploitation / $portefeuille_moyen : 0;
 
+// Frais généraux (62, 63, 64)
 $frais_generaux = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE (pc.numero_compte LIKE '62%' OR pc.numero_compte LIKE '63%' OR pc.numero_compte LIKE '64%') 
-          AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_debit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE (pc.numero_compte LIKE '62%' OR pc.numero_compte LIKE '63%' OR pc.numero_compte LIKE '64%') AND e.date_ecriture BETWEEN :debut AND :fin");
     $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
     $frais_generaux = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $frais_generaux = 0; }
-
 $ratio_frais_generaux = ($portefeuille_moyen > 0) ? $frais_generaux / $portefeuille_moyen : 0;
 
+// Charges de personnel (62)
 $charges_personnel = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '62%' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_debit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '62%' AND e.date_ecriture BETWEEN :debut AND :fin");
     $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
     $charges_personnel = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $charges_personnel = 0; }
-
 $ratio_charges_personnel = ($portefeuille_moyen > 0) ? $charges_personnel / $portefeuille_moyen : 0;
 
-// ============================================================
-// I-4 - INDICATEURS DE RENTABILITÉ
-// ============================================================
-
+// Produits d'exploitation (classe 7)
 $produits_exploitation = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.classe_compte = '7' AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_credit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.classe_compte = '7' AND e.date_ecriture BETWEEN :debut AND :fin");
     $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
     $produits_exploitation = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $produits_exploitation = 0; }
 
 $resultat_exploitation = $produits_exploitation - $charges_exploitation;
 
+// Fonds propres moyens
 $fonds_propres = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.classe_compte = '1' AND e.date_ecriture <= :date_fin
-    ");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.classe_compte = '1' AND e.date_ecriture <= :date_fin");
     $stmt->execute([':date_fin' => $date_fin_periode]);
     $fonds_propres = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $fonds_propres = 0; }
-
 $fonds_propres_prec = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.classe_compte = '1' AND e.date_ecriture <= :date_fin_prec
-    ");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.classe_compte = '1' AND e.date_ecriture <= :date_fin_prec");
     $stmt->execute([':date_fin_prec' => $date_fin_prec]);
     $fonds_propres_prec = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $fonds_propres_prec = 0; }
-
 $fonds_propres_moyens = ($fonds_propres + $fonds_propres_prec) / 2;
 $roe = ($fonds_propres_moyens > 0) ? $resultat_exploitation / $fonds_propres_moyens : 0;
 
-$total_actif = 0;
+// Actif total moyen
+$actif_total_n = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(montant_debit - montant_credit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.classe_compte = '2' AND e.date_ecriture <= :date_fin
-    ");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_debit - montant_credit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.classe_compte = '2' AND e.date_ecriture <= :date_fin");
     $stmt->execute([':date_fin' => $date_fin_periode]);
-    $total_actif = abs((float)$stmt->fetch()['total']);
-} catch (PDOException $e) { $total_actif = 0; }
+    $actif_total_n = abs((float)$stmt->fetch()['total']);
+} catch (PDOException $e) { $actif_total_n = 0; }
+$actif_total_prec = 0;
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_debit - montant_credit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.classe_compte = '2' AND e.date_ecriture <= :date_fin_prec");
+    $stmt->execute([':date_fin_prec' => $date_fin_prec]);
+    $actif_total_prec = abs((float)$stmt->fetch()['total']);
+} catch (PDOException $e) { $actif_total_prec = 0; }
+$actif_total_moyen = ($actif_total_n + $actif_total_prec) / 2;
+$roa = ($actif_total_moyen > 0) ? $resultat_exploitation / $actif_total_moyen : 0;
 
-$roa = ($total_actif > 0) ? $resultat_exploitation / $total_actif : 0;
+// Autosuffisance
 $autosuffisance = ($charges_exploitation > 0) ? $produits_exploitation / $charges_exploitation : 0;
+
+// Marge bénéficiaire
 $marge_beneficiaire = ($produits_exploitation > 0) ? $resultat_exploitation / $produits_exploitation : 0;
 
+// Produits financiers nets (intérêts perçus - charges financières)
 $produits_financiers_net = 0;
 try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as total
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE (pc.numero_compte LIKE '70%' OR pc.numero_compte LIKE '76%') 
-          AND e.date_ecriture BETWEEN :debut AND :fin
-    ");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE pc.numero_compte LIKE '70%' AND e.date_ecriture BETWEEN :debut AND :fin");
     $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
     $produits_financiers_net = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $produits_financiers_net = 0; }
-
+// On déduit les charges financières (R08 à R7A) approximativement
+$charges_financieres = 0;
+try {
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(e.montant_debit), 0) as total FROM ecritures_comptables e INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte WHERE (pc.numero_compte LIKE 'R08%' OR pc.numero_compte LIKE 'R3A%' OR pc.numero_compte LIKE 'R4B%' OR pc.numero_compte LIKE 'R5B%' OR pc.numero_compte LIKE 'R5E%' OR pc.numero_compte LIKE 'R5Y%' OR pc.numero_compte LIKE 'R6A%' OR pc.numero_compte LIKE 'R6F%' OR pc.numero_compte LIKE 'R6V%' OR pc.numero_compte LIKE 'R7A%') AND e.date_ecriture BETWEEN :debut AND :fin");
+    $stmt->execute([':debut' => $date_debut_exercice, ':fin' => $date_fin_periode]);
+    $charges_financieres = (float)$stmt->fetch()['total'];
+} catch (PDOException $e) { $charges_financieres = 0; }
+$produits_financiers_net = max(0, $produits_financiers_net - $charges_financieres);
 $coefficient_exploitation = ($produits_financiers_net > 0) ? $frais_generaux / $produits_financiers_net : 0;
 
-// ============================================================
-// I-5 - INDICATEURS DE GESTION DU BILAN
-// ============================================================
-
+// Taux de rendement des actifs
 $taux_rendement = ($portefeuille_moyen > 0) ? $produits_financiers_net / $portefeuille_moyen : 0;
 
+// Liquidité de l'actif
 $disponibilites = 0;
 try {
     $stmt = $pdo->prepare("SELECT COALESCE(SUM(solde_actuel), 0) as total FROM caisses WHERE statut = 'ouverte'");
     $stmt->execute();
     $disponibilites = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) { $disponibilites = 0; }
+$ratio_liquidite = ($actif_total_moyen > 0) ? $disponibilites / $actif_total_moyen : 0;
 
-$ratio_liquidite = ($total_actif > 0) ? $disponibilites / $total_actif : 0;
-$ratio_capitalisation = ($total_actif > 0) ? $fonds_propres / $total_actif : 0;
-
-// Normes pour vérification
-function getNormeClass($valeur, $min, $max, $inverse = false) {
-    if ($inverse) {
-        $conforme = ($valeur <= $max);
-    } else {
-        $conforme = ($valeur >= $min);
-    }
-    return $conforme ? 'conforme' : 'non-conforme';
-}
+// Capitalisation
+$ratio_capitalisation = ($actif_total_moyen > 0) ? $fonds_propres / $actif_total_moyen : 0;
 
 // ============================================================
-// CLASSE FPDF (export PDF via POST)
+// CONSTRUCTION DU TABLEAU D'INDICATEURS (conforme à IND.xlsx)
+// ============================================================
+
+$indicateurs = [];
+
+// I-1 - QUALITÉ DU PORTEFEUILLE
+$indicateurs[] = ['code' => 'INDIC_FINANC_01', 'nom' => 'Portefeuille classé à risque', 'normes' => '<5% pour x>=30 jours  <3% pour x>=90 jours  <2% pour x>180 jours', 'rcsfd' => '(B2D à B70) – B65', 'calcul' => 'Numérateur = Montant des crédits dont une échéance au moins est impayée depuis plus de x jours', 'valeur' => number_format($encours_souffrance, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_02', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'Dénominateur = Total des encours bruts de crédits, y compris ceux en souffrance', 'valeur' => number_format($portefeuille_total, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_03', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO PAR', 'valeur' => number_format($encours_souffrance / max(1, $portefeuille_total) * 100, 2) . '%'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_04', 'nom' => 'Taux de provisions pour créances en souffrance', 'normes' => '>=40%', 'rcsfd' => 'B70, 2ème colonne Amortissements et Provisions', 'calcul' => 'Numérateur = Montant des provisions constituées sur les créances en souffrance', 'valeur' => number_format($provisions_creances, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_05', 'nom' => '', 'normes' => '', 'rcsfd' => 'B70, 1ère colonne Montant brut', 'calcul' => 'Dénominateur = Montant total des créances en souffrance.', 'valeur' => number_format($encours_souffrance, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_06', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($provisions_creances / max(1, $encours_souffrance) * 100, 2) . '%'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_07', 'nom' => 'Taux de perte sur créances', 'normes' => '< 2 %', 'rcsfd' => 'Numérateur : T6K+T6L', 'calcul' => 'Numérateur = Montant des pertes enregistrées sur les créances au cours de la période', 'valeur' => number_format($pertes_creances, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_08', 'nom' => '', 'normes' => '', 'rcsfd' => 'Dénominateur : (B2D à B70) – B65', 'calcul' => 'Dénominateur = Total des encours bruts de crédits de la période, y compris ceux en souffrance', 'valeur' => number_format($portefeuille_total, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_09', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($pertes_creances / max(1, $portefeuille_total) * 100, 2) . '%'];
+
+// I-2 - ACTIVITÉS
+$indicateurs[] = ['code' => 'INDIC_FINANC_10', 'nom' => 'Montant moyen des crédits décaissés', 'normes' => 'Tendance haussière', 'rcsfd' => '', 'calcul' => 'Numérateur = Mouvements enregistrés sur la période au débit des comptes de crédits aux membres, bénéficiaires ou clients à court, moyen et long terme, au niveau de la balance générale', 'valeur' => number_format($total_decaissements, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_11', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'Dénominateur = Nombre total des crédits décaissés au cours de la période', 'valeur' => number_format($nb_decaissements, 0, ',', ' ')];
+$indicateurs[] = ['code' => 'INDIC_FINANC_12', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($montant_moyen_credit, 0, ',', ' ') . ' FCFA'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_13', 'nom' => 'Montant moyen de l\'épargne par épargnant', 'normes' => 'Tendance haussière', 'rcsfd' => 'G10 à G35', 'calcul' => 'Numérateur = Dépôts des membres ou bénéficiaires', 'valeur' => number_format($total_epargne, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_14', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'Dénominateur = Nombre de personnes disposant d\'un ou de plusieurs dépôts auprès de l\'institution, y compris l\'épargne obligatoire. Un individu ne peut être pris en compte plus d\'une fois', 'valeur' => number_format($nb_epargnants, 0, ',', ' ')];
+$indicateurs[] = ['code' => 'INDIC_FINANC_15', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($montant_moyen_epargne, 0, ',', ' ') . ' FCFA'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_16', 'nom' => 'Encours moyen des crédits par emprunteur', 'normes' => 'Tendance haussière', 'rcsfd' => '(B2D à B70) – B65', 'calcul' => 'Numérateur = Total des encours de crédits à la fin de la période (Crédits sains + crédits en souffrance)', 'valeur' => number_format($portefeuille_total, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_17', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'Dénominateur = Nombre de personnes ayant un encours de crédit vis-à-vis de l\'institution. Un individu ne peut être pris en compte plus d\'une fois', 'valeur' => number_format($nb_emprunteurs, 0, ',', ' ')];
+$indicateurs[] = ['code' => 'INDIC_FINANC_18', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($encours_moyen_emprunteur, 0, ',', ' ') . ' FCFA'];
+
+// I-3 - EFFICACITÉ / PRODUCTIVITÉ
+$indicateurs[] = ['code' => 'INDIC_FINANC_19', 'nom' => 'Productivité des agents de crédit', 'normes' => '>= 130', 'rcsfd' => '', 'calcul' => 'Numérateur = Nombre de personnes ayant un ou plusieurs crédits en cours avec l\'institution. Un individu ne peut être pris en compte plus d\'une fois', 'valeur' => number_format($nb_emprunteurs, 0, ',', ' ')];
+$indicateurs[] = ['code' => 'INDIC_FINANC_20', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'Dénominateur = Nombre d\'agents de crédit', 'valeur' => number_format($nb_agents_credit, 0, ',', ' ')];
+$indicateurs[] = ['code' => 'INDIC_FINANC_21', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($productivite_agents, 0, ',', ' ')];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_22', 'nom' => 'Productivité du personnel', 'normes' => '>115', 'rcsfd' => '', 'calcul' => 'Numérateur = Nombre de personnes ayant au moins un dépôt et/ou un crédit en cours auprès de l\'institution. Un individu ne peut être pris en compte plus d\'une fois', 'valeur' => number_format($nb_clients_actifs, 0, ',', ' ')];
+$indicateurs[] = ['code' => 'INDIC_FINANC_23', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'Dénominateur = Nombre d\'employés', 'valeur' => number_format($nb_employes, 0, ',', ' ')];
+$indicateurs[] = ['code' => 'INDIC_FINANC_24', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($productivite_personnel, 0, ',', ' ')];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_25', 'nom' => 'Charges d\'exploitation rapportées au portefeuille de crédits', 'normes' => '<=35%', 'rcsfd' => '(R0S à T6B)', 'calcul' => 'Numérateur = Montant des charges d\'exploitation de la période', 'valeur' => number_format($charges_exploitation, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_26', 'nom' => '', 'normes' => '', 'rcsfd' => 'Moyenne (B2D à B70-B65)', 'calcul' => 'Dénominateur = Moyenne du total des encours bruts de crédits de la période, y compris ceux en souffrance', 'valeur' => number_format($portefeuille_moyen, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_27', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($ratio_charges_portefeuille * 100, 2) . '%'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_28', 'nom' => 'Ratio des frais généraux rapportés au portefeuille de crédits', 'normes' => '<15% pour crédit direct, <20% pour épargne/crédit', 'rcsfd' => 'S02 à T50', 'calcul' => 'Numérateur = Frais de personnel + impôts et taxes + autres charges externes et charges diverses d\'exploitation + dotations au fonds pour risques financiers généraux', 'valeur' => number_format($frais_generaux, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_29', 'nom' => '', 'normes' => '', 'rcsfd' => 'Moyenne [(B2D à B70) – B65]', 'calcul' => 'Dénominateur = Moyenne du total des encours bruts de crédits de la période, y compris ceux en souffrance', 'valeur' => number_format($portefeuille_moyen, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_30', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($ratio_frais_generaux * 100, 2) . '%'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_31', 'nom' => 'Ratio des charges de personnel', 'normes' => '<5% crédit direct, <20% épargne/crédit', 'rcsfd' => 'S02', 'calcul' => 'Numérateur = salaires et traitements + charges sociales + rémunérations versées aux stagiaires', 'valeur' => number_format($charges_personnel, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_32', 'nom' => '', 'normes' => '', 'rcsfd' => 'Moyenne [(B2D à B70) – B65]', 'calcul' => 'Dénominateur = Moyenne du total des encours bruts de crédits, y compris ceux en souffrance', 'valeur' => number_format($portefeuille_moyen, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_33', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($ratio_charges_personnel * 100, 2) . '%'];
+
+// I-4 - RENTABILITÉ
+$indicateurs[] = ['code' => 'INDIC_FINANC_34', 'nom' => 'Rentabilité des fonds propres', 'normes' => '>15%', 'rcsfd' => '(V08 à X6B – W53) – (R08 à T6B)', 'calcul' => 'Numérateur = RE = Produits d\'exploitation hors subventions (PE) – Charges d\'exploitation (CE)', 'valeur' => number_format($resultat_exploitation, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_35', 'nom' => '', 'normes' => '', 'rcsfd' => 'L01', 'calcul' => 'Dénominateur = Fonds propres moyens sur la période', 'valeur' => number_format($fonds_propres_moyens, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_36', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($roe * 100, 2) . '%'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_37', 'nom' => 'Rendement sur actif', 'normes' => '>3%', 'rcsfd' => 'E90', 'calcul' => 'Numérateur = Résultat d’exploitation hors subventions (RE) (voir «Rentabilité des fonds propres »)', 'valeur' => number_format($resultat_exploitation, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_38', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'Dénominateur = Montant moyen de l’actif', 'valeur' => number_format($actif_total_moyen, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_39', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($roa * 100, 2) . '%'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_40', 'nom' => 'Autosuffisance opérationnelle', 'normes' => '>130%', 'rcsfd' => '(V08 à X6B – W53)', 'calcul' => 'Numérateur = Montant total des produits d’exploitation (PE)', 'valeur' => number_format($produits_exploitation, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_41', 'nom' => '', 'normes' => '', 'rcsfd' => '(R08 à T6B)', 'calcul' => 'Dénominateur = Montant total des charges d’exploitation (CE)', 'valeur' => number_format($charges_exploitation, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_42', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($autosuffisance, 2)];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_43', 'nom' => 'Marge bénéficiaire', 'normes' => '>20%', 'rcsfd' => '(V08 à X6B – W53)', 'calcul' => 'Numérateur = Résultat d’exploitation (RE)', 'valeur' => number_format($resultat_exploitation, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_44', 'nom' => '', 'normes' => '', 'rcsfd' => '– (R08 à T6B) (V08 à X6B – W53)', 'calcul' => 'Dénominateur = Montant total des produits d’exploitation (PE)', 'valeur' => number_format($produits_exploitation, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_45', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($marge_beneficiaire * 100, 2) . '%'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_46', 'nom' => 'Coefficient d\'exploitation', 'normes' => '<=40% crédit direct, <=60% épargne/crédit', 'rcsfd' => 'S02 à T50', 'calcul' => 'Numérateur = Frais généraux (FG)', 'valeur' => number_format($frais_generaux, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_47', 'nom' => '', 'normes' => '', 'rcsfd' => '(V08 à V7A) – (R08 à R7A)', 'calcul' => 'Dénominateur = Produits financiers nets (PFN)', 'valeur' => number_format($produits_financiers_net, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_48', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($coefficient_exploitation * 100, 2) . '%'];
+
+// I-5 - GESTION DU BILAN
+$indicateurs[] = ['code' => 'INDIC_FINANC_49', 'nom' => 'Taux de rendement des actifs', 'normes' => '>15%', 'rcsfd' => '(V0S à V7A)', 'calcul' => 'Numérateur = Montant des intérêts et des commissions perçus au cours de la période', 'valeur' => number_format($produits_financiers_net, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_50', 'nom' => '', 'normes' => '', 'rcsfd' => '(A01-A10-A60-A70) + (B01-B65-B70) + (C10+C56) + (D1A)', 'calcul' => 'Dénominateur = Opérations avec les institutions financières et assimilées + opérations avec les membres ou bénéficiaires + titres à court terme + immobilisations financières', 'valeur' => number_format($portefeuille_moyen, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_51', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($taux_rendement * 100, 2) . '%'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_52', 'nom' => 'Ratio de liquidité de l’actif', 'normes' => '>2% crédit direct, >5% épargne/crédit', 'rcsfd' => '(A10+A12+A2H+A2J+C10)', 'calcul' => 'Numérateur = Encaisses et comptes courants ordinaires + titres à court terme (Disponibilités et comptes courants bancaires + instruments financiers facilement négociables de la période)', 'valeur' => number_format($disponibilites, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_53', 'nom' => '', 'normes' => '', 'rcsfd' => 'E90', 'calcul' => 'Dénominateur = Actif total de la période', 'valeur' => number_format($actif_total_moyen, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_54', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($ratio_liquidite * 100, 2) . '%'];
+
+$indicateurs[] = ['code' => 'INDIC_FINANC_55', 'nom' => 'Ratio de capitalisation', 'normes' => '>15%', 'rcsfd' => 'L01', 'calcul' => 'Numérateur = Fonds propres', 'valeur' => number_format($fonds_propres, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_56', 'nom' => '', 'normes' => '', 'rcsfd' => 'E90', 'calcul' => 'Dénominateur = Montant total de l’actif de la période', 'valeur' => number_format($actif_total_moyen, 0, ',', ' ') . ' FCFA'];
+$indicateurs[] = ['code' => 'INDIC_FINANC_57', 'nom' => '', 'normes' => '', 'rcsfd' => '', 'calcul' => 'RATIO', 'valeur' => number_format($ratio_capitalisation * 100, 2) . '%'];
+
+// ============================================================
+// EXPORT PDF AVEC FPDF - Tableau complet
 // ============================================================
 if ($format === 'pdf') {
     if (ob_get_length()) ob_end_clean();
     
-    class PDF_DIMF extends FPDF {
+    class PDF_DIMF_IND extends FPDF {
         function convert($str) {
             $str = str_replace(array('é','è','ê','ë','à','â','ä','î','ï','ô','ö','ù','û','ü','ç','É','È','Ê','Ë','À','Â','Ä','Î','Ï','Ô','Ö','Ù','Û','Ü','Ç'), 
                               array('e','e','e','e','a','a','a','i','i','o','o','u','u','u','c','E','E','E','E','A','A','A','I','I','O','O','U','U','U','C'), $str);
@@ -369,7 +406,7 @@ if ($format === 'pdf') {
             $this->SetFont('Arial', '', 8);
             $this->SetTextColor(255, 255, 255);
             $this->SetX(8);
-            $this->Cell(0, 5, $this->convert('Indicateurs de performance - Article 44'), 0, 1, 'L');
+            $this->Cell(0, 5, $this->convert('Periode : ' . $GLOBALS['lib_periode'] . ' - Arrete au ' . date('d/m/Y', strtotime($GLOBALS['date_fin_periode']))), 0, 1, 'L');
             $this->SetTextColor(0, 0, 0);
             $this->Ln(10);
         }
@@ -381,132 +418,100 @@ if ($format === 'pdf') {
             $this->Cell(0, 4, $this->convert('Page ' . $this->PageNo() . '/{nb} - Genere le ' . date('d/m/Y H:i:s')), 0, 0, 'C');
         }
         
-        function SectionTitle($label) {
-            $this->SetFont('Arial', 'B', 10);
-            $this->SetTextColor(255, 255, 255);
-            $this->SetFillColor(0, 0, 0);
-            $this->Cell(0, 8, $this->convert($label), 0, 1, 'L', true);
-            $this->Ln(2);
+        function TableHeader($cols) {
+            $this->SetFont('Arial', 'B', 7);
+            $this->SetFillColor(248, 250, 252);
+            $this->SetTextColor(30, 41, 59);
+            $this->SetDrawColor(226, 232, 240);
+            $this->SetLineWidth(0.2);
+            foreach ($cols as $col) {
+                $this->Cell($col['w'], 6, $this->convert($col['label']), 1, 0, $col['align'], true);
+            }
+            $this->Ln();
         }
         
-        function IndicatorCard($title, $value, $norme, $class, $details = '') {
-            $this->SetFont('Arial', 'B', 9);
-            $this->Cell(80, 7, $this->convert($title), 1, 0);
-            $this->SetFont('Arial', '', 9);
-            if ($class == 'conforme') {
-                $this->SetTextColor(22, 163, 74);
+        function TableRow($cols, $data, $style = '') {
+            $fill = false;
+            if ($style == 'section') {
+                $this->SetFillColor(230, 240, 255);
+                $this->SetFont('Arial', 'B', 7);
+                $fill = true;
             } else {
-                $this->SetTextColor(220, 38, 38);
-            }
-            $this->Cell(60, 7, $this->convert($value), 1, 0);
-            $this->SetTextColor(0, 0, 0);
-            $this->SetFont('Arial', 'I', 8);
-            $this->Cell(0, 7, $this->convert($norme), 1, 1);
-            if ($details) {
+                $this->SetFillColor(255, 255, 255);
                 $this->SetFont('Arial', '', 7);
-                $this->Cell(0, 5, $this->convert($details), 1, 1);
+                $fill = false;
             }
-        }
-        
-        function montant($val) {
-            return number_format((float)$val, 0, ',', ' ') . ' F';
+            $this->SetTextColor(15, 23, 42);
+            $this->SetDrawColor(226, 232, 240);
+            $this->SetLineWidth(0.1);
+            foreach ($cols as $i => $col) {
+                $val = isset($data[$i]) ? $data[$i] : '';
+                $this->Cell($col['w'], 5.5, $this->convert($val), 1, 0, $col['align'], $fill);
+            }
+            $this->Ln();
         }
     }
     
-    $pdf = new PDF_DIMF('P', 'mm', 'A4');
+    $pdf = new PDF_DIMF_IND('P', 'mm', 'A4');
     $pdf->AliasNbPages();
-    $pdf->SetMargins(12, 35, 12);
+    $pdf->SetMargins(10, 35, 10);
     $pdf->AddPage();
     
-    $pdf->SetFont('Arial', '', 9);
-    $pdf->Cell(0, 6, $pdf->convert('Periode : ' . $lib_periode), 0, 1, 'C');
-    $pdf->Ln(5);
+    // Colonnes : Code, NOM, NORMES, CODE RCSFD, ELEMENTS CALCUL, VALEUR
+    $cols = [
+        ['w' => 22, 'label' => 'Code', 'align' => 'L'],
+        ['w' => 32, 'label' => 'NOM DU RATIO', 'align' => 'L'],
+        ['w' => 28, 'label' => 'NORMES', 'align' => 'L'],
+        ['w' => 25, 'label' => 'CODE RCSFD', 'align' => 'L'],
+        ['w' => 60, 'label' => 'ELEMENTS DE CALCUL', 'align' => 'L'],
+        ['w' => 23, 'label' => 'VALEUR', 'align' => 'R']
+    ];
     
-    // I-1 - Qualité du portefeuille
-    $pdf->SectionTitle('I-1 - Indicateurs de qualite du portefeuille');
-    $par_30_value = number_format($par_30 * 100, 2) . '%';
-    $par_30_class = ($par_30 <= 0.05) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('PAR 30', $par_30_value, 'Norme : ≤ 5%', $par_30_class, 'Encours souffrance : ' . $pdf->montant($encours_souffrance));
+    $pdf->TableHeader($cols);
     
-    $taux_prov_value = number_format($taux_provision * 100, 2) . '%';
-    $taux_prov_class = ($taux_provision >= 0.40) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Taux de provisions', $taux_prov_value, 'Norme : ≥ 40%', $taux_prov_class, 'Provisions : ' . $pdf->montant($provisions_creances));
+    $section_titles = [
+        'INDIC_FINANC_01' => 'I-1 - QUALITE DU PORTEFEUILLE',
+        'INDIC_FINANC_10' => 'I-2 - ACTIVITES',
+        'INDIC_FINANC_19' => 'I-3 - EFFICACITE/PRODUCTIVITE',
+        'INDIC_FINANC_34' => 'I-4 - RENTABILITE',
+        'INDIC_FINANC_49' => 'I-5 - GESTION DU BILAN'
+    ];
     
-    $taux_perte_value = number_format($taux_perte * 100, 2) . '%';
-    $taux_perte_class = ($taux_perte <= 0.02) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Taux de perte sur creances', $taux_perte_value, 'Norme : ≤ 2%', $taux_perte_class, 'Pertes : ' . $pdf->montant($pertes_creances));
-    $pdf->Ln(3);
+    $current_section = '';
+    $section_displayed = false;
     
-    // I-2 - Indicateurs d'activités
-    $pdf->SectionTitle('I-2 - Indicateurs d\'activites');
-    $pdf->IndicatorCard('Montant moyen des credits', $pdf->montant($montant_moyen_credit), '', '', 'Total de caisses : ' . $pdf->montant($total_decaissements) . ' - Nb credits : ' . number_format($nb_decaissements, 0, ',', ' '));
-    $pdf->IndicatorCard('Montant moyen de l\'epargne', $pdf->montant($montant_moyen_epargne), '', '', 'Total epargne : ' . $pdf->montant($total_epargne) . ' - Nb epargnants : ' . number_format($nb_epargnants, 0, ',', ' '));
-    $pdf->IndicatorCard('Encours moyen par emprunteur', $pdf->montant($encours_moyen_emprunteur), '', '', 'Encours total : ' . $pdf->montant($portefeuille_total) . ' - Nb emprunteurs : ' . number_format($nb_emprunteurs, 0, ',', ' '));
-    $pdf->Ln(3);
-    
-    // I-3 - Indicateurs d'efficacité
-    $pdf->SectionTitle('I-3 - Indicateurs d\'efficacite/productivite');
-    $prod_agents_value = number_format($productivite_agents, 0) . ' emp/agent';
-    $prod_agents_class = ($productivite_agents >= 130) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Productivite des agents', $prod_agents_value, 'Norme : ≥ 130', $prod_agents_class, 'Agents de credit : ' . $nb_agents_credit);
-    
-    $prod_perso_value = number_format($productivite_personnel, 0) . ' clients/emp';
-    $prod_perso_class = ($productivite_personnel >= 115) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Productivite du personnel', $prod_perso_value, 'Norme : ≥ 115', $prod_perso_class, 'Effectif personnel : ' . $nb_employes);
-    
-    $ratio_charges_value = number_format($ratio_charges_portefeuille * 100, 2) . '%';
-    $ratio_charges_class = ($ratio_charges_portefeuille <= 0.35) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Charges d\'exploitation / Portefeuille', $ratio_charges_value, 'Norme : ≤ 35%', $ratio_charges_class);
-    
-    $ratio_frais_value = number_format($ratio_frais_generaux * 100, 2) . '%';
-    $ratio_frais_class = ($ratio_frais_generaux <= 0.20) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Ratio des frais generaux', $ratio_frais_value, 'Norme : ≤ 20%', $ratio_frais_class);
-    
-    $ratio_perso_value = number_format($ratio_charges_personnel * 100, 2) . '%';
-    $ratio_perso_class = ($ratio_charges_personnel <= 0.10) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Ratio des charges de personnel', $ratio_perso_value, 'Norme : ≤ 10%', $ratio_perso_class);
-    $pdf->Ln(3);
-    
-    // I-4 - Indicateurs de rentabilité
-    $pdf->SectionTitle('I-4 - Indicateurs de rentabilite');
-    $roe_value = number_format($roe * 100, 2) . '%';
-    $roe_class = ($roe >= 0.15) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Rentabilite des fonds propres (ROE)', $roe_value, 'Norme : ≥ 15%', $roe_class);
-    
-    $roa_value = number_format($roa * 100, 2) . '%';
-    $roa_class = ($roa >= 0.03) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Rendement sur actif (ROA)', $roa_value, 'Norme : ≥ 3%', $roa_class);
-    
-    $auto_value = number_format($autosuffisance, 2);
-    $auto_class = ($autosuffisance >= 1.30) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Autosuffisance operationnelle', $auto_value, 'Norme : ≥ 1.30', $auto_class);
-    
-    $marge_value = number_format($marge_beneficiaire * 100, 2) . '%';
-    $marge_class = ($marge_beneficiaire >= 0.20) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Marge beneficiaire', $marge_value, 'Norme : ≥ 20%', $marge_class);
-    
-    $coeff_value = number_format($coefficient_exploitation * 100, 2) . '%';
-    $coeff_class = ($coefficient_exploitation <= 0.60) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Coefficient d\'exploitation', $coeff_value, 'Norme : ≤ 60%', $coeff_class);
-    $pdf->Ln(3);
-    
-    // I-5 - Indicateurs de gestion du bilan
-    $pdf->SectionTitle('I-5 - Indicateurs de gestion du bilan');
-    $taux_rend_value = number_format($taux_rendement * 100, 2) . '%';
-    $taux_rend_class = ($taux_rendement >= 0.15) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Taux de rendement des actifs', $taux_rend_value, 'Norme : ≥ 15%', $taux_rend_class);
-    
-    $ratio_liq_value = number_format($ratio_liquidite * 100, 2) . '%';
-    $ratio_liq_class = ($ratio_liquidite >= 0.05) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Ratio de liquidite de l\'actif', $ratio_liq_value, 'Norme : ≥ 5%', $ratio_liq_class, 'Disponibilites : ' . $pdf->montant($disponibilites));
-    
-    $ratio_cap_value = number_format($ratio_capitalisation * 100, 2) . '%';
-    $ratio_cap_class = ($ratio_capitalisation >= 0.15) ? 'conforme' : 'non-conforme';
-    $pdf->IndicatorCard('Ratio de capitalisation', $ratio_cap_value, 'Norme : ≥ 15%', $ratio_cap_class, 'Fonds propres : ' . $pdf->montant($fonds_propres));
+    foreach ($indicateurs as $row) {
+        // Détecter le début d'une nouvelle section (première ligne avec code non vide)
+        if ($row['code'] != '') {
+            // Trouver la section correspondante
+            $section = '';
+            foreach ($section_titles as $code => $title) {
+                if ($row['code'] == $code) {
+                    $section = $title;
+                    break;
+                }
+            }
+            if ($section && $section != $current_section) {
+                // Insérer une ligne de titre de section
+                $pdf->TableRow($cols, ['', $section, '', '', '', ''], 'section');
+                $current_section = $section;
+            }
+        }
+        $pdf->TableRow($cols, [$row['code'], $row['nom'], $row['normes'], $row['rcsfd'], $row['calcul'], $row['valeur']]);
+    }
     
     $pdf->Output('I', 'INDICATEURS_FINANCIERS_' . $exercice . '.pdf');
     exit;
 }
+
+// ============================================================
+// EXPORT EXCEL AVEC XLSX (via JavaScript) - Tableau complet
+// ============================================================
+// Nous utilisons la méthode JavaScript existante, mais nous allons générer le même tableau.
+
+// ============================================================
+// AFFICHAGE WEB - TABLEAU COMPLET
+// ============================================================
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -514,22 +519,21 @@ if ($format === 'pdf') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>INDICATEURS_FINANCIERS_ACTIVI - Indicateurs financiers</title>
-    <!-- Bootstrap 5 CSS (intégré sans modification du design) -->
+    <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- XLSX library pour export Excel -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Styles personnalisés inchangés -->
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background: #f1f5f9; padding: 24px; }
+        body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: #f1f5f9; padding: 24px; }
         .dashboard { max-width: 1400px; margin: 0 auto; }
         
         .page-header { background: linear-gradient(135deg, #3b82f6, #60a5fa); border-radius: 24px; padding: 20px 28px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; box-shadow: 0 4px 6px -2px rgba(0,0,0,0.05); }
         .header-left h1 { font-size: 1.6rem; font-weight: 600; color: white; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; }
         .subtitle { font-size: 0.8rem; color: #e0f2fe; line-height: 1.4; }
-        .badge { display: inline-block; background: #2563eb; color: white; padding: 4px 12px; border-radius: 30px; font-size: 0.7rem; font-weight: 500; margin-top: 8px; }
+        .badge-custom { display: inline-block; background: #2563eb; color: white; padding: 4px 12px; border-radius: 30px; font-size: 0.7rem; font-weight: 500; margin-top: 8px; }
         
         .btn-group { display: flex; gap: 12px; }
         .btn-excel, .btn-pdf { display: inline-flex; align-items: center; gap: 8px; padding: 8px 20px; border-radius: 40px; font-weight: 500; font-size: 0.85rem; border: none; cursor: pointer; transition: 0.2s; text-decoration: none; }
@@ -551,17 +555,15 @@ if ($format === 'pdf') {
         .btn-apply { background: #3b82f6; color: white; border: none; border-radius: 40px; padding: 8px 24px; font-weight: 500; font-size: 0.85rem; cursor: pointer; transition: 0.2s; }
         .btn-apply:hover { background: #2563eb; transform: translateY(-1px); }
         
-        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
-        .indicator-card { background: #f8fafc; border-radius: 16px; padding: 18px; border-left: 4px solid #3b82f6; transition: transform 0.2s; }
-        .indicator-card:hover { transform: translateY(-2px); }
-        .indicator-card .title { font-weight: 600; font-size: 0.85rem; color: #4b5563; margin-bottom: 8px; }
-        .indicator-card .value { font-size: 1.6rem; font-weight: 700; margin-bottom: 8px; }
-        .indicator-card .norme { font-size: 0.7rem; color: #6b7280; margin-bottom: 8px; }
-        .indicator-card .details { font-size: 0.7rem; color: #6b7280; border-top: 1px solid #e2e8f0; margin-top: 8px; padding-top: 8px; }
-        .conforme { color: #16a34a; }
-        .non-conforme { color: #dc2626; }
-        
-        .info-box { background: #eef2ff; border-left: 4px solid #3b82f6; padding: 16px 20px; border-radius: 16px; display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+        .table-wrapper { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+        th, td { padding: 8px 12px; border: 1px solid #e2e8f0; vertical-align: top; }
+        th { background: #f8fafc; font-weight: 600; color: #1e293b; text-align: center; }
+        td { color: #0f172a; }
+        .text-right { text-align: right; }
+        .text-center { text-align: center; }
+        .section-row { background: #d9e8f5; font-weight: 600; }
+        .section-row td { background: #d9e8f5; }
         
         .footer { text-align: center; font-size: 0.75rem; color: #6b7280; margin-top: 16px; padding: 16px; }
         
@@ -569,9 +571,8 @@ if ($format === 'pdf') {
             body { padding: 12px; }
             .filters-row { flex-direction: column; align-items: stretch; }
             .btn-group { flex-wrap: wrap; }
-            .grid-2 { grid-template-columns: 1fr; }
+            .table-wrapper { overflow-x: auto; }
         }
-        
         @media print {
             body { background: white; padding: 0; }
             .btn-group, .footer, .filters-row, #filtersCard { display: none !important; }
@@ -584,11 +585,10 @@ if ($format === 'pdf') {
         <div class="header-left">
             <h1><i class="fas fa-chart-line"></i> INDICATEURS FINANCIERS D'ACTIVITE</h1>
             <div class="subtitle">Republique de Cote d'Ivoire / Ministere de l'Economie et des Finances – DGTCP / DSFD</div>
-            <div class="badge">Indicateurs de performance - Article 44</div>
+            <div class="badge-custom">Indicateurs de performance - Article 44</div>
         </div>
         <div class="btn-group">
             <button class="btn-excel" onclick="exporterExcel()"><i class="fas fa-file-excel"></i> Excel</button>
-            <!-- Bouton PDF avec soumission POST -->
             <form method="post" id="pdfForm" style="display: inline;">
                 <input type="hidden" name="format" value="pdf">
                 <input type="hidden" name="exercice" value="<?= $exercice ?>">
@@ -601,7 +601,7 @@ if ($format === 'pdf') {
         </div>
     </div>
 
-    <!-- Formulaire de filtres en POST -->
+    <!-- Filtres -->
     <div class="card" id="filtersCard">
         <div class="card-header"><i class="fas fa-sliders-h"></i> Filtres</div>
         <div class="card-body">
@@ -625,7 +625,7 @@ if ($format === 'pdf') {
                         </select>
                     </div>
                     <div class="filter-item" id="dynamicSelectContainer">
-                        <!-- Contenu dynamique généré par JS (noms des champs: 'mois', 'trimestre', 'semestre') -->
+                        <!-- Contenu dynamique -->
                     </div>
                     <button type="submit" class="btn-apply"><i class="fas fa-filter"></i> Appliquer</button>
                 </div>
@@ -636,192 +636,73 @@ if ($format === 'pdf') {
         </div>
     </div>
 
-    <!-- Note d'information -->
+    <!-- Tableau complet -->
     <div class="card">
+        <div class="card-header"><i class="fas fa-table"></i> TABLEAU DES INDICATEURS FINANCIERS</div>
         <div class="card-body">
-            <div class="info-box">
-                <i class="fas fa-info-circle"></i>
-                <div><strong>Note :</strong> Les indicateurs ci-dessous sont calcules automatiquement a partir des donnees de la base. Les valeurs en <span style="color:#16a34a;">vert</span> sont conformes aux normes, celles en <span style="color:#dc2626;">rouge</span> necessitent une attention particuliere.</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- I-1 - Qualité du portefeuille -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-chart-simple"></i> I-1 - Indicateurs de qualite du portefeuille</div>
-        <div class="card-body">
-            <div class="grid-2">
-                <div class="indicator-card">
-                    <div class="title">PAR 30</div>
-                    <div class="value <?= $par_30 <= 0.05 ? 'conforme' : 'non-conforme' ?>"><?= number_format($par_30 * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≤ 5%</div>
-                    <div class="details">Encours souffrance : <?= number_format($encours_souffrance, 0, ',', ' ') ?> FCFA</div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Taux de provisions pour creances en souffrance</div>
-                    <div class="value <?= $taux_provision >= 0.40 ? 'conforme' : 'non-conforme' ?>"><?= number_format($taux_provision * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≥ 40%</div>
-                    <div class="details">Provisions : <?= number_format($provisions_creances, 0, ',', ' ') ?> FCFA</div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Taux de perte sur creances</div>
-                    <div class="value <?= $taux_perte <= 0.02 ? 'conforme' : 'non-conforme' ?>"><?= number_format($taux_perte * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≤ 2%</div>
-                    <div class="details">Pertes : <?= number_format($pertes_creances, 0, ',', ' ') ?> FCFA</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- I-2 - Indicateurs d'activités -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-chart-line"></i> I-2 - Indicateurs d'activites</div>
-        <div class="card-body">
-            <div class="grid-2">
-                <div class="indicator-card">
-                    <div class="title">Montant moyen des credits decaisses</div>
-                    <div class="value"><?= number_format($montant_moyen_credit, 0, ',', ' ') ?> FCFA</div>
-                    <div class="details">Total decaisse : <?= number_format($total_decaissements, 0, ',', ' ') ?> FCFA<br>Nombre de credits : <?= number_format($nb_decaissements) ?></div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Montant moyen de l'epargne par epargnant</div>
-                    <div class="value"><?= number_format($montant_moyen_epargne, 0, ',', ' ') ?> FCFA</div>
-                    <div class="details">Total epargne : <?= number_format($total_epargne, 0, ',', ' ') ?> FCFA<br>Nombre d'epargnants : <?= number_format($nb_epargnants) ?></div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Encours moyen des credits par emprunteur</div>
-                    <div class="value"><?= number_format($encours_moyen_emprunteur, 0, ',', ' ') ?> FCFA</div>
-                    <div class="details">Encours total : <?= number_format($portefeuille_total, 0, ',', ' ') ?> FCFA<br>Emprunteurs actifs : <?= number_format($nb_emprunteurs) ?></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- I-3 - Indicateurs d'efficacité -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-gauge-high"></i> I-3 - Indicateurs d'efficacite/productivite</div>
-        <div class="card-body">
-            <div class="grid-2">
-                <div class="indicator-card">
-                    <div class="title">Productivite des agents de credits</div>
-                    <div class="value <?= $productivite_agents >= 130 ? 'conforme' : 'non-conforme' ?>"><?= number_format($productivite_agents, 0) ?> emp/agent</div>
-                    <div class="norme">Norme : ≥ 130</div>
-                    <div class="details">Agents de credit : <?= $nb_agents_credit ?></div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Productivite du personnel</div>
-                    <div class="value <?= $productivite_personnel >= 115 ? 'conforme' : 'non-conforme' ?>"><?= number_format($productivite_personnel, 0) ?> clients/emp</div>
-                    <div class="norme">Norme : ≥ 115</div>
-                    <div class="details">Effectif personnel : <?= $nb_employes ?></div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Charges d'exploitation / Portefeuille credit</div>
-                    <div class="value <?= $ratio_charges_portefeuille <= 0.35 ? 'conforme' : 'non-conforme' ?>"><?= number_format($ratio_charges_portefeuille * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≤ 35%</div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Ratio des frais generaux</div>
-                    <div class="value <?= $ratio_frais_generaux <= 0.20 ? 'conforme' : 'non-conforme' ?>"><?= number_format($ratio_frais_generaux * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≤ 20%</div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Ratio des charges de personnel</div>
-                    <div class="value <?= $ratio_charges_personnel <= 0.10 ? 'conforme' : 'non-conforme' ?>"><?= number_format($ratio_charges_personnel * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≤ 10%</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- I-4 - Indicateurs de rentabilité -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-coins"></i> I-4 - Indicateurs de rentabilite</div>
-        <div class="card-body">
-            <div class="grid-2">
-                <div class="indicator-card">
-                    <div class="title">Rentabilite des fonds propres (ROE)</div>
-                    <div class="value <?= $roe >= 0.15 ? 'conforme' : 'non-conforme' ?>"><?= number_format($roe * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≥ 15%</div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Rendement sur actif (ROA)</div>
-                    <div class="value <?= $roa >= 0.03 ? 'conforme' : 'non-conforme' ?>"><?= number_format($roa * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≥ 3%</div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Autosuffisance operationnelle</div>
-                    <div class="value <?= $autosuffisance >= 1.30 ? 'conforme' : 'non-conforme' ?>"><?= number_format($autosuffisance, 2) ?></div>
-                    <div class="norme">Norme : ≥ 1.30</div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Marge beneficiaire</div>
-                    <div class="value <?= $marge_beneficiaire >= 0.20 ? 'conforme' : 'non-conforme' ?>"><?= number_format($marge_beneficiaire * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≥ 20%</div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Coefficient d'exploitation</div>
-                    <div class="value <?= $coefficient_exploitation <= 0.60 ? 'conforme' : 'non-conforme' ?>"><?= number_format($coefficient_exploitation * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≤ 60%</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- I-5 - Indicateurs de gestion du bilan -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-scale-balanced"></i> I-5 - Indicateurs de gestion du bilan</div>
-        <div class="card-body">
-            <div class="grid-2">
-                <div class="indicator-card">
-                    <div class="title">Taux de rendement des actifs</div>
-                    <div class="value <?= $taux_rendement >= 0.15 ? 'conforme' : 'non-conforme' ?>"><?= number_format($taux_rendement * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≥ 15%</div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Ratio de liquidite de l'actif</div>
-                    <div class="value <?= $ratio_liquidite >= 0.05 ? 'conforme' : 'non-conforme' ?>"><?= number_format($ratio_liquidite * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≥ 5%</div>
-                    <div class="details">Disponibilites : <?= number_format($disponibilites, 0, ',', ' ') ?> FCFA</div>
-                </div>
-                <div class="indicator-card">
-                    <div class="title">Ratio de capitalisation</div>
-                    <div class="value <?= $ratio_capitalisation >= 0.15 ? 'conforme' : 'non-conforme' ?>"><?= number_format($ratio_capitalisation * 100, 2) ?>%</div>
-                    <div class="norme">Norme : ≥ 15%</div>
-                    <div class="details">Fonds propres : <?= number_format($fonds_propres, 0, ',', ' ') ?> FCFA</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Récapitulatif -->
-    <div class="card">
-        <div class="card-header"><i class="fas fa-table-list"></i> RECAPITULATIF DES INDICATEURS CLES</div>
-        <div class="card-body">
-            <div class="info-box">
-                <i class="fas fa-calculator"></i>
-                <div>
-                    <strong>Portefeuille de credits :</strong> <?= number_format($portefeuille_total, 0, ',', ' ') ?> FCFA<br>
-                    <strong>Encours en souffrance :</strong> <?= number_format($encours_souffrance, 0, ',', ' ') ?> FCFA (<?= number_format($par_30 * 100, 2) ?>%)<br>
-                    <strong>Fonds propres :</strong> <?= number_format($fonds_propres, 0, ',', ' ') ?> FCFA<br>
-                    <strong>Resultat d'exploitation :</strong> <?= number_format($resultat_exploitation, 0, ',', ' ') ?> FCFA<br>
-                    <strong>ROE :</strong> <?= number_format($roe * 100, 2) ?>% &nbsp;|&nbsp;
-                    <strong>ROA :</strong> <?= number_format($roa * 100, 2) ?>% &nbsp;|&nbsp;
-                    <strong>Autosuffisance :</strong> <?= number_format($autosuffisance, 2) ?>
-                </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:8%">Code</th>
+                            <th style="width:12%">NOM DU RATIO</th>
+                            <th style="width:10%">NORMES</th>
+                            <th style="width:10%">CODE DU RCSFD</th>
+                            <th style="width:45%">ELEMENTS DE CALCUL</th>
+                            <th style="width:15%">VALEUR</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php
+                        $section_titles = [
+                            'INDIC_FINANC_01' => 'I-1 - QUALITE DU PORTEFEUILLE',
+                            'INDIC_FINANC_10' => 'I-2 - ACTIVITES',
+                            'INDIC_FINANC_19' => 'I-3 - EFFICACITE/PRODUCTIVITE',
+                            'INDIC_FINANC_34' => 'I-4 - RENTABILITE',
+                            'INDIC_FINANC_49' => 'I-5 - GESTION DU BILAN'
+                        ];
+                        $current_section = '';
+                        foreach ($indicateurs as $row):
+                            // Détecter début de section
+                            if ($row['code'] != '') {
+                                $section = '';
+                                foreach ($section_titles as $code => $title) {
+                                    if ($row['code'] == $code) {
+                                        $section = $title;
+                                        break;
+                                    }
+                                }
+                                if ($section && $section != $current_section) {
+                                    echo '<tr class="section-row"><td colspan="6"><strong>' . $section . '</strong></td></tr>';
+                                    $current_section = $section;
+                                }
+                            }
+                        ?>
+                            <tr>
+                                <td><?= $row['code'] ?></td>
+                                <td><?= $row['nom'] ?></td>
+                                <td><?= $row['normes'] ?></td>
+                                <td><?= $row['rcsfd'] ?></td>
+                                <td><?= $row['calcul'] ?></td>
+                                <td class="text-right"><?= $row['valeur'] ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
 
     <div class="footer">
-        <i class="fas fa-calendar-alt"></i> Document genere le <?= date('d/m/Y a H:i:s') ?> - Donnees extraites de la base Mandigo<br>
-        Periode : <?= $exercice ?> - <?= $trimestre ?>eme trimestre (arrete au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>)
+        <i class="fas fa-calendar-alt"></i> Document genere le <?= date('d/m/Y a H:i:s') ?> - Donnees extraites de la base Microfinances_dg<br>
+        Periode : <?= $exercice ?> - <?= $lib_periode ?> (arrete au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>)
     </div>
 </div>
 
-<!-- Scripts : Bootstrap 5 JS + gestion POST -->
+<!-- Scripts -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // Mise à jour dynamique du select de période (mois, trimestre, semestre) pour les filtres
+    // Mise à jour dynamique du select de période
     function updateDynamicSelect() {
         const type = document.getElementById('typePeriodeSelect').value;
         const container = document.getElementById('dynamicSelectContainer');
@@ -829,7 +710,6 @@ if ($format === 'pdf') {
         const currentTrimestre = <?= $trimestre ?>;
         const currentSemestre = <?= json_encode($semestre) ?>;
         let html = '';
-        
         if (type === 'mensuel') {
             html = '<label>Mois</label><select name="mois" id="moisSelect" class="form-select">';
             for (let m = 1; m <= 12; m++) {
@@ -858,49 +738,39 @@ if ($format === 'pdf') {
         container.innerHTML = html;
     }
 
-    // Fonction d'export Excel (inchangée car elle utilise les variables PHP existantes)
+    // Export Excel
     function exporterExcel() {
-        const wb = XLSX.utils.book_new();
-        
-        let data = [
-            ['INDICATEURS FINANCIERS D\'ACTIVITE'],
-            ['Periode : <?= addslashes($lib_periode) ?>'],
-            [],
-            ['I-1 - Indicateurs de qualite du portefeuille', ''],
-            ['PAR 30', '<?= number_format($par_30 * 100, 2) ?>%'],
-            ['Taux de provisions', '<?= number_format($taux_provision * 100, 2) ?>%'],
-            ['Taux de perte sur creances', '<?= number_format($taux_perte * 100, 2) ?>%'],
-            [],
-            ['I-2 - Indicateurs d\'activites', ''],
-            ['Montant moyen des credits decaisses', '<?= number_format($montant_moyen_credit, 0, '', '') ?>'],
-            ['Montant moyen de l\'epargne', '<?= number_format($montant_moyen_epargne, 0, '', '') ?>'],
-            ['Encours moyen par emprunteur', '<?= number_format($encours_moyen_emprunteur, 0, '', '') ?>'],
-            [],
-            ['I-3 - Indicateurs d\'efficacite', ''],
-            ['Productivite des agents de credits', '<?= number_format($productivite_agents, 0) ?>'],
-            ['Productivite du personnel', '<?= number_format($productivite_personnel, 0) ?>'],
-            ['Charges d\'exploitation / Portefeuille', '<?= number_format($ratio_charges_portefeuille * 100, 2) ?>%'],
-            ['Ratio des frais generaux', '<?= number_format($ratio_frais_generaux * 100, 2) ?>%'],
-            ['Ratio des charges de personnel', '<?= number_format($ratio_charges_personnel * 100, 2) ?>%'],
-            [],
-            ['I-4 - Indicateurs de rentabilite', ''],
-            ['Rentabilite des fonds propres (ROE)', '<?= number_format($roe * 100, 2) ?>%'],
-            ['Rendement sur actif (ROA)', '<?= number_format($roa * 100, 2) ?>%'],
-            ['Autosuffisance operationnelle', '<?= number_format($autosuffisance, 2) ?>'],
-            ['Marge beneficiaire', '<?= number_format($marge_beneficiaire * 100, 2) ?>%'],
-            ['Coefficient d\'exploitation', '<?= number_format($coefficient_exploitation * 100, 2) ?>%'],
-            [],
-            ['I-5 - Indicateurs de gestion du bilan', ''],
-            ['Taux de rendement des actifs', '<?= number_format($taux_rendement * 100, 2) ?>%'],
-            ['Ratio de liquidite de l\'actif', '<?= number_format($ratio_liquidite * 100, 2) ?>%'],
-            ['Ratio de capitalisation', '<?= number_format($ratio_capitalisation * 100, 2) ?>%']
+        // Construire les données à partir du tableau PHP
+        const data = [
+            ['Code', 'NOM DU RATIO', 'NORMES', 'CODE DU RCSFD', 'ELEMENTS DE CALCUL', 'VALEUR']
         ];
-        
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(data), "INDICATEURS");
+        <?php
+        $current_section = '';
+        foreach ($indicateurs as $row) {
+            // Détecter section
+            $section = '';
+            if ($row['code'] != '') {
+                foreach ($section_titles as $code => $title) {
+                    if ($row['code'] == $code) {
+                        $section = $title;
+                        break;
+                    }
+                }
+                if ($section && $section != $current_section) {
+                    echo "data.push(['', '" . addslashes($section) . "', '', '', '', '']);\n";
+                    $current_section = $section;
+                }
+            }
+            echo "data.push(['" . addslashes($row['code']) . "', '" . addslashes($row['nom']) . "', '" . addslashes($row['normes']) . "', '" . addslashes($row['rcsfd']) . "', '" . addslashes($row['calcul']) . "', '" . addslashes($row['valeur']) . "']);\n";
+        }
+        ?>
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        XLSX.utils.book_append_sheet(wb, ws, "INDICATEURS");
         XLSX.writeFile(wb, 'INDICATEURS_FINANCIERS_<?= $exercice ?>.xlsx');
     }
 
-    // Initialisation des événements
+    // Initialisation
     document.addEventListener('DOMContentLoaded', function() {
         updateDynamicSelect();
         document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect);
