@@ -1,6 +1,6 @@
 <?php
 // DIMF_2008.php - État des biens avec clause de réserve de propriété
-// FPDF intégré, gestion POST, Bootstrap
+// Utilise la table existante z_bceao_reserve_propriete
 
 session_start();
 
@@ -9,6 +9,7 @@ session_start();
 // ============================================================
 require_once '../databases/database.php';
 require_once '../fpdf/fpdf.php';
+
 
 class PDF_DIMF extends FPDF {
     public $codeDimf  = 'DIMF';
@@ -76,25 +77,29 @@ class PDF_DIMF extends FPDF {
     }
 
     function TableRow($cols, $data, $style = '') {
+        $fill = false;
+        $this->SetTextColor(15, 23, 42);
+        $this->SetDrawColor(226, 232, 240);
+        $this->SetLineWidth(0.1);
         switch ($style) {
             case 'subtotal':
                 $this->SetFillColor(248, 250, 252);
                 $this->SetFont('Arial', 'B', 8);
-                $fill = true; break;
+                $fill = true;
+                break;
             case 'total':
                 $this->SetFillColor(240, 253, 244);
                 $this->SetFont('Arial', 'B', 8.5);
-                $fill = true; break;
+                $fill = true;
+                break;
             default:
                 $this->SetFillColor(255, 255, 255);
                 $this->SetFont('Arial', '', 7.5);
-                $fill = false; break;
+                $fill = false;
+                break;
         }
-        $this->SetTextColor(15, 23, 42);
-        $this->SetDrawColor(226, 232, 240);
-        $this->SetLineWidth(0.1);
         foreach ($cols as $i => $col) {
-            $val   = isset($data[$i]) ? $data[$i] : '';
+            $val = isset($data[$i]) ? $data[$i] : '';
             $align = isset($col['align']) ? $col['align'] : 'L';
             $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
         }
@@ -130,51 +135,55 @@ $message = '';
 $message_type = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     try {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS biens_reserve_propriete (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            exercice INT NOT NULL,
-            libelle VARCHAR(255) NOT NULL,
-            objet_clause VARCHAR(100),
-            montant_brut DECIMAL(15,2) DEFAULT 0,
-            date_inscription DATE,
-            duree_jouissance INT,
-            creancier_nom VARCHAR(200),
-            creancier_adresse TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        // Fonction pour générer le prochain code
+        $stmt = $pdo->prepare("SELECT MAX(CAST(SUBSTRING(code, LENGTH('DIMF_2008_1_') + 1) AS UNSIGNED)) AS max_num 
+                               FROM z_bceao_reserve_propriete 
+                               WHERE exercice = :exercice AND code LIKE 'DIMF_2008_1_%'");
+        $stmt->execute([':exercice' => $exercice]);
+        $row = $stmt->fetch();
+        $next_num = ($row['max_num'] ?? 0) + 1;
+        $new_code = 'DIMF_2008_1_' . $next_num;
 
         if ($_POST['action'] === 'add') {
-            $stmt = $pdo->prepare("INSERT INTO biens_reserve_propriete (exercice, libelle, objet_clause, montant_brut, date_inscription, duree_jouissance, creancier_nom, creancier_adresse) VALUES (:exercice, :libelle, :objet_clause, :montant_brut, :date_inscription, :duree_jouissance, :creancier_nom, :creancier_adresse)");
+            $stmt = $pdo->prepare("INSERT INTO z_bceao_reserve_propriete 
+                (exercice, code, libelle_bien, objet_clause, montant_brut, date_inscription, duree_jouissance, creancier_nom, statut) 
+                VALUES (:exercice, :code, :libelle_bien, :objet_clause, :montant_brut, :date_inscription, :duree_jouissance, :creancier_nom, 'actif')");
             $stmt->execute([
                 ':exercice' => $exercice,
-                ':libelle' => $_POST['libelle'] ?? '',
+                ':code' => $new_code,
+                ':libelle_bien' => $_POST['libelle_bien'] ?? '',
                 ':objet_clause' => $_POST['objet_clause'] ?? '',
-                ':montant_brut' => $_POST['montant_brut'] ?? 0,
+                ':montant_brut' => (float)($_POST['montant_brut'] ?? 0),
                 ':date_inscription' => !empty($_POST['date_inscription']) ? $_POST['date_inscription'] : null,
                 ':duree_jouissance' => !empty($_POST['duree_jouissance']) ? (int)$_POST['duree_jouissance'] : null,
-                ':creancier_nom' => $_POST['creancier_nom'] ?? '',
-                ':creancier_adresse' => $_POST['creancier_adresse'] ?? ''
+                ':creancier_nom' => $_POST['creancier_nom'] ?? ''
             ]);
-            $message = "Bien ajouté !";
+            $message = "Bien ajouté avec le code $new_code !";
             $message_type = "success";
         } elseif ($_POST['action'] === 'delete' && isset($_POST['id'])) {
-            $stmt = $pdo->prepare("DELETE FROM biens_reserve_propriete WHERE id = :id AND exercice = :exercice");
+            // Suppression logique : on passe statut à 'inactif'
+            $stmt = $pdo->prepare("UPDATE z_bceao_reserve_propriete SET statut = 'inactif' WHERE id = :id AND exercice = :exercice");
             $stmt->execute([':id' => (int)$_POST['id'], ':exercice' => $exercice]);
-            $message = "Bien supprimé !";
+            $message = "Bien supprimé (désactivé) !";
             $message_type = "success";
         } elseif ($_POST['action'] === 'update' && isset($_POST['id'])) {
-            $stmt = $pdo->prepare("UPDATE biens_reserve_propriete SET libelle = :libelle, objet_clause = :objet_clause, montant_brut = :montant_brut, date_inscription = :date_inscription, duree_jouissance = :duree_jouissance, creancier_nom = :creancier_nom, creancier_adresse = :creancier_adresse WHERE id = :id AND exercice = :exercice");
+            $stmt = $pdo->prepare("UPDATE z_bceao_reserve_propriete SET 
+                libelle_bien = :libelle_bien, 
+                objet_clause = :objet_clause, 
+                montant_brut = :montant_brut, 
+                date_inscription = :date_inscription, 
+                duree_jouissance = :duree_jouissance, 
+                creancier_nom = :creancier_nom
+                WHERE id = :id AND exercice = :exercice");
             $stmt->execute([
                 ':id' => (int)$_POST['id'],
                 ':exercice' => $exercice,
-                ':libelle' => $_POST['libelle'] ?? '',
+                ':libelle_bien' => $_POST['libelle_bien'] ?? '',
                 ':objet_clause' => $_POST['objet_clause'] ?? '',
-                ':montant_brut' => $_POST['montant_brut'] ?? 0,
+                ':montant_brut' => (float)($_POST['montant_brut'] ?? 0),
                 ':date_inscription' => !empty($_POST['date_inscription']) ? $_POST['date_inscription'] : null,
                 ':duree_jouissance' => !empty($_POST['duree_jouissance']) ? (int)$_POST['duree_jouissance'] : null,
-                ':creancier_nom' => $_POST['creancier_nom'] ?? '',
-                ':creancier_adresse' => $_POST['creancier_adresse'] ?? ''
+                ':creancier_nom' => $_POST['creancier_nom'] ?? ''
             ]);
             $message = "Bien modifié !";
             $message_type = "success";
@@ -183,6 +192,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $message = "Erreur : " . $e->getMessage();
         $message_type = "error";
     }
+    // Redirection pour éviter la resoumission
     $url = "DIMF_2008.php?exercice=$exercice&type_periode=$type_periode" .
            ($type_periode=='mensuel' ? "&mois=$mois" : ($type_periode=='trimestre' ? "&trimestre=$trimestre" : ($type_periode=='semestre' ? "&semestre=$semestre" : ""))) .
            "&msg=" . urlencode($message) . "&msg_type=$message_type";
@@ -195,12 +205,12 @@ if (isset($_GET['msg'])) {
 }
 
 // ============================================================
-// RÉCUPÉRATION DES BIENS
+// RÉCUPÉRATION DES BIENS ACTIFS
 // ============================================================
 $biens_reserve = [];
 $total_montant_brut = 0;
 try {
-    $stmt = $pdo->prepare("SELECT * FROM biens_reserve_propriete WHERE exercice = :exercice ORDER BY id");
+    $stmt = $pdo->prepare("SELECT * FROM z_bceao_reserve_propriete WHERE exercice = :exercice AND statut = 'actif' ORDER BY code");
     $stmt->execute([':exercice' => $exercice]);
     $biens_reserve = $stmt->fetchAll();
     foreach ($biens_reserve as $bien) {
@@ -208,15 +218,17 @@ try {
     }
 } catch (PDOException $e) {}
 
+// Récupération du bien à éditer
 $edit_bien = null;
 if (isset($_GET['edit']) && is_numeric($_GET['edit'])) {
     try {
-        $stmt = $pdo->prepare("SELECT * FROM biens_reserve_propriete WHERE id = :id AND exercice = :exercice");
+        $stmt = $pdo->prepare("SELECT * FROM z_bceao_reserve_propriete WHERE id = :id AND exercice = :exercice AND statut = 'actif'");
         $stmt->execute([':id' => (int)$_GET['edit'], ':exercice' => $exercice]);
         $edit_bien = $stmt->fetch();
     } catch (PDOException $e) {}
 }
 
+// Liste des objets de clause possibles (pour le select)
 $objets_clause = ['ACHAT' => 'Achat', 'CONSTRUCTION' => 'Construction', 'EQUIPEMENT' => 'Équipement', 'AUTRE' => 'Autre'];
 
 // ============================================================
@@ -244,28 +256,28 @@ if ($format === 'pdf') {
     $pdf->AddPage();
 
     $cols = [
-        ['label' => 'Libellé', 'w' => 40],
+        ['label' => 'CODE', 'w' => 30],
+        ['label' => 'Libellé', 'w' => 50],
         ['label' => 'Objet clause', 'w' => 30],
         ['label' => 'Montant brut', 'w' => 35, 'align' => 'R'],
         ['label' => 'Date inscription', 'w' => 30, 'align' => 'C'],
         ['label' => 'Durée (mois)', 'w' => 25, 'align' => 'C'],
-        ['label' => 'Créancier', 'w' => 40],
-        ['label' => 'Adresse', 'w' => 50]
+        ['label' => 'Créancier', 'w' => 40]
     ];
     $pdf->SectionTitle('Biens avec clause de réserve de propriété');
     $pdf->TableHeader($cols);
     foreach ($biens_reserve as $b) {
         $pdf->TableRow($cols, [
-            PDF_DIMF::u($b['libelle']),
+            $b['code'],
+            PDF_DIMF::u($b['libelle_bien']),
             PDF_DIMF::u($objets_clause[$b['objet_clause']] ?? $b['objet_clause'] ?: '-'),
             PDF_DIMF::montant($b['montant_brut']),
             $b['date_inscription'] ? date('d/m/Y', strtotime($b['date_inscription'])) : '-',
             $b['duree_jouissance'] ? $b['duree_jouissance'] . ' mois' : '-',
-            PDF_DIMF::u($b['creancier_nom'] ?: '-'),
-            PDF_DIMF::u($b['creancier_adresse'] ?: '-')
+            PDF_DIMF::u($b['creancier_nom'] ?: '-')
         ]);
     }
-    $pdf->TableRow($cols, ['TOTAL', '', PDF_DIMF::montant($total_montant_brut), '', '', '', ''], 'total');
+    $pdf->TableRow($cols, ['TOTAL', '', '', PDF_DIMF::montant($total_montant_brut), '', '', ''], 'total');
     $pdf->Output('I', 'DIMF_2008_ReservePropriete_' . $exercice . '_' . $type_periode . '.pdf');
     exit;
 }
@@ -374,6 +386,7 @@ if ($format === 'pdf') {
         </div>
     <?php endif; ?>
 
+    <!-- Formulaire d'ajout / modification -->
     <div class="card">
         <div class="card-header"><i class="fas <?= $edit_bien?'fa-edit':'fa-plus-circle' ?>"></i> <?= $edit_bien?'MODIFIER UN BIEN':'AJOUTER UN BIEN' ?></div>
         <form method="post">
@@ -382,7 +395,7 @@ if ($format === 'pdf') {
             <div class="filters-row" style="margin-bottom:0;">
                 <div class="filter-item">
                     <label>Libellé *</label>
-                    <input type="text" name="libelle" required value="<?= $edit_bien?htmlspecialchars($edit_bien['libelle']):'' ?>">
+                    <input type="text" name="libelle_bien" required value="<?= $edit_bien?htmlspecialchars($edit_bien['libelle_bien']):'' ?>">
                 </div>
                 <div class="filter-item">
                     <label>Objet clause</label>
@@ -395,7 +408,7 @@ if ($format === 'pdf') {
                 </div>
                 <div class="filter-item">
                     <label>Montant brut (FCFA)</label>
-                    <input type="number" name="montant_brut" value="<?= $edit_bien?(int)$edit_bien['montant_brut']:0 ?>">
+                    <input type="number" name="montant_brut" value="<?= $edit_bien?(float)$edit_bien['montant_brut']:0 ?>">
                 </div>
                 <div class="filter-item">
                     <label>Date inscription</label>
@@ -410,10 +423,6 @@ if ($format === 'pdf') {
                     <input type="text" name="creancier_nom" value="<?= $edit_bien?htmlspecialchars($edit_bien['creancier_nom']):'' ?>">
                 </div>
                 <div class="filter-item">
-                    <label>Adresse</label>
-                    <textarea name="creancier_adresse"><?= $edit_bien?htmlspecialchars($edit_bien['creancier_adresse']):'' ?></textarea>
-                </div>
-                <div class="filter-item">
                     <button type="submit" class="btn-apply"><?= $edit_bien?'Mettre à jour':'Ajouter' ?></button>
                 </div>
                 <?php if($edit_bien): ?>
@@ -425,20 +434,22 @@ if ($format === 'pdf') {
         </form>
     </div>
 
+    <!-- Liste des biens -->
     <div class="card">
         <div class="card-header"><i class="fas fa-list-ul"></i> LISTE DES BIENS</div>
         <?php if(empty($biens_reserve)): ?>
-            <div class="info-box">Aucun bien enregistré.</div>
+            <div class="info-box">Aucun bien enregistré pour l'exercice <?= $exercice ?>.</div>
         <?php else: ?>
             <div class="table-wrapper">
                 <table>
                     <thead>
-                        <tr><th>Libellé</th><th>Objet clause</th><th class="text-right">Montant brut</th><th>Date inscription</th><th>Durée jouissance</th><th>Créancier</th><th>Actions</th></tr>
+                        <tr><th>CODE</th><th>Libellé</th><th>Objet clause</th><th class="text-right">Montant brut</th><th>Date inscription</th><th>Durée jouissance</th><th>Créancier</th><th>Actions</th></tr>
                     </thead>
                     <tbody>
                         <?php foreach($biens_reserve as $b): ?>
                             <tr>
-                                <td><?= htmlspecialchars($b['libelle']) ?></td>
+                                <td><?= htmlspecialchars($b['code']) ?></td>
+                                <td><?= htmlspecialchars($b['libelle_bien']) ?></td>
                                 <td><?= htmlspecialchars($objets_clause[$b['objet_clause']]??$b['objet_clause']?:'-') ?></td>
                                 <td class="text-right"><?= number_format($b['montant_brut'],0,',',' ') ?></td>
                                 <td><?= $b['date_inscription']?date('d/m/Y',strtotime($b['date_inscription'])):'-' ?></td>
@@ -446,7 +457,7 @@ if ($format === 'pdf') {
                                 <td><?= htmlspecialchars($b['creancier_nom']?:'-') ?></td>
                                 <td class="action-buttons">
                                     <a href="?exercice=<?= $exercice ?>&type_periode=<?= $type_periode ?><?= $type_periode=='mensuel'?"&mois=$mois":($type_periode=='trimestre'?"&trimestre=$trimestre":($type_periode=='semestre'?"&semestre=$semestre":"")) ?>&edit=<?= $b['id'] ?>" class="btn-warning"><i class="fas fa-edit"></i></a>
-                                    <form method="post" style="display:inline;" onsubmit="return confirm('Supprimer ?')">
+                                    <form method="post" style="display:inline;" onsubmit="return confirm('Supprimer définitivement ?')">
                                         <input type="hidden" name="action" value="delete">
                                         <input type="hidden" name="id" value="<?= $b['id'] ?>">
                                         <button type="submit" class="btn-danger"><i class="fas fa-trash-alt"></i></button>
@@ -455,7 +466,7 @@ if ($format === 'pdf') {
                             </tr>
                         <?php endforeach; ?>
                         <tr class="total-row">
-                            <td colspan="2"><strong>TOTAL</strong></td>
+                            <td colspan="3"><strong>TOTAL</strong></td>
                             <td class="text-right"><strong><?= number_format($total_montant_brut,0,',',' ') ?></strong></td>
                             <td colspan="4"></td>
                         </tr>
@@ -466,7 +477,7 @@ if ($format === 'pdf') {
     </div>
 
     <div class="page-footer">
-        <i class="fas fa-calendar-alt"></i> Document généré le <?= date('d/m/Y à H:i:s') ?> – Période : <?= $exercice ?> (<?= ucfirst($type_periode) ?>) arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>
+        <i class="fas fa-calendar-alt"></i> Document généré le <?= date('d/m/Y à H:i:s') ?> – Période : <?= $exercice ?> (<?= ucfirst($type_periode) ?>) arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?> – Données issues de <code>z_bceao_reserve_propriete</code>
     </div>
 </div>
 
@@ -514,7 +525,7 @@ if ($format === 'pdf') {
         input.name = 'format';
         input.value = 'pdf';
         form.appendChild(input);
-        form.target = '_blank';
+        form.target = '_self';
         form.submit();
         form.target = '';
         form.removeChild(input);
@@ -522,11 +533,24 @@ if ($format === 'pdf') {
 
     function exporterExcel() {
         const wb = XLSX.utils.book_new();
-        const data = [['DIMF_2008 - RÉSERVE DE PROPRIÉTÉ'],['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],[],['Libellé','Objet','Montant brut','Date inscription','Durée (mois)','Créancier','Adresse']];
+        const data = [
+            ['DIMF_2008 - RÉSERVE DE PROPRIÉTÉ'],
+            ['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],
+            [],
+            ['CODE','Libellé','Objet clause','Montant brut','Date inscription','Durée (mois)','Créancier']
+        ];
         <?php foreach($biens_reserve as $b): ?>
-        data.push(['<?= addslashes($b['libelle']) ?>','<?= addslashes($objets_clause[$b['objet_clause']]??$b['objet_clause']?:'-') ?>',<?= $b['montant_brut'] ?>,'<?= $b['date_inscription']?date('d/m/Y',strtotime($b['date_inscription'])):'-' ?>','<?= $b['duree_jouissance']??'-' ?>','<?= addslashes($b['creancier_nom']?:'-') ?>','<?= addslashes($b['creancier_adresse']?:'-') ?>']);
+        data.push([
+            '<?= addslashes($b['code']) ?>',
+            '<?= addslashes($b['libelle_bien']) ?>',
+            '<?= addslashes($objets_clause[$b['objet_clause']]??$b['objet_clause']?:'-') ?>',
+            <?= $b['montant_brut'] ?>,
+            '<?= $b['date_inscription']?date('d/m/Y',strtotime($b['date_inscription'])):'-' ?>',
+            '<?= $b['duree_jouissance']??'-' ?>',
+            '<?= addslashes($b['creancier_nom']?:'-') ?>'
+        ]);
         <?php endforeach; ?>
-        data.push(['TOTAL','',<?= $total_montant_brut ?>,'','','','']);
+        data.push(['TOTAL','','',<?= $total_montant_brut ?>,'','','']);
         const ws = XLSX.utils.aoa_to_sheet(data);
         XLSX.utils.book_append_sheet(wb, ws, "RESERVE_PROPRIETE");
         XLSX.writeFile(wb, 'DIMF_2008_<?= $exercice ?>_<?= $type_periode ?>.xlsx');

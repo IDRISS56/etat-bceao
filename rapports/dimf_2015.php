@@ -1,14 +1,16 @@
 <?php
 // DIMF_2015.php - État des valeurs immobilisées
-// Design DIMF_2000 - gestion POST, Bootstrap, FPDF avec mb_convert_encoding
+// Version conforme au modèle Excel DIMF_2015
+// Utilise les tables existantes : immobilisations, amortissements, ecritures_comptables, plan_comptables
 
 session_start();
 
-// ------------------------- CONNEXION BDD -------------------------
 require_once '../databases/database.php';
 require_once '../fpdf/fpdf.php';
 
-// ------------------------- PARAMÈTRES (POST > GET) -------------------------
+// ============================================================
+// PARAMÈTRES (POST / GET)
+// ============================================================
 $exercice     = isset($_POST['exercice'])     ? (int)$_POST['exercice']     : (isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y'));
 $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode']      : (isset($_GET['type_periode']) ? $_GET['type_periode'] : 'mensuel');
 $mois         = isset($_POST['mois'])         ? (int)$_POST['mois']         : (isset($_GET['mois']) ? (int)$_GET['mois'] : 12);
@@ -30,11 +32,9 @@ $lib_periode = match($type_periode) {
 };
 
 // ============================================================
-// RÉCUPÉRATION DES IMMOBILISATIONS DEPUIS LA TABLE
+// RÉCUPÉRATION DES DONNÉES D'IMMOBILISATIONS
 // ============================================================
-$immobilisations_data = [];
-$total_brut = $total_amort = $total_net = 0;
-
+$immos_data = [];
 try {
     $stmt = $pdo->prepare("
         SELECT 
@@ -48,164 +48,114 @@ try {
     ");
     $stmt->execute([':date_fin' => $date_fin_periode]);
     $immos = $stmt->fetchAll();
-
-    if (!empty($immos)) {
-        foreach ($immos as $immo) {
-            $type = $immo['type_immobilisation'];
-            if (!isset($immobilisations_data[$type])) {
-                $immobilisations_data[$type] = [
-                    'brut'  => 0,
-                    'amort' => 0,
-                    'net'   => 0,
-                    'libelle' => $type,
-                    'details' => []
-                ];
-            }
-            $immobilisations_data[$type]['brut']  += (float)$immo['brut'];
-            $immobilisations_data[$type]['amort'] += (float)$immo['amort'];
-            $immobilisations_data[$type]['net']   += (float)$immo['net'];
-            $immobilisations_data[$type]['details'][] = $immo;
-        }
-    }
 } catch (PDOException $e) {
-    // Table absente -> fallback plus tard
+    $immos = [];
 }
 
 // ============================================================
-// FALLBACK : SI AUCUNE DONNÉE, UTILISATION DES ÉCRITURES COMPTABLES
+// DÉFINITION DE LA STRUCTURE DU TABLEAU (conforme au fichier Excel)
 // ============================================================
-if (empty($immobilisations_data)) {
-    $categories_comptes = [
-        'D1E' => ['libelle' => 'Titres de participation',        'debut' => '261', 'fin' => '261', 'amort_debut' => '281'],
-        'D1L' => ['libelle' => 'Titres d\'investissement',       'debut' => '271', 'fin' => '271', 'amort_debut' => '281'],
-        'D1S' => ['libelle' => 'Dépôts et cautionnements',       'debut' => '274', 'fin' => '274', 'amort_debut' => '281'],
-        'D31' => ['libelle' => 'Immobilisations incorporelles',  'debut' => '201', 'fin' => '208', 'amort_debut' => '281'],
-        'D36' => ['libelle' => 'Immobilisations corporelles',    'debut' => '21',  'fin' => '22',  'amort_debut' => '281'],
-        'D41' => ['libelle' => 'Immobilisations incorporelles hors exploitation', 'debut' => '291', 'fin' => '291', 'amort_debut' => '291'],
-        'D45' => ['libelle' => 'Immobilisations corporelles hors exploitation', 'debut' => '292', 'fin' => '292', 'amort_debut' => '292'],
-    ];
-
-    foreach ($categories_comptes as $code => $cat) {
-        $brut = 0;
-        $amort = 0;
-        try {
-            $stmt = $pdo->prepare("
-                SELECT COALESCE(SUM(montant_debit - montant_credit), 0) as total
-                FROM ecritures_comptables e
-                INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-                WHERE pc.numero_compte BETWEEN :debut AND :fin
-                  AND e.date_ecriture <= :date_fin
-            ");
-            $stmt->execute([':debut' => $cat['debut'], ':fin' => $cat['fin'], ':date_fin' => $date_fin_periode]);
-            $brut = abs((float)$stmt->fetch()['total']);
-        } catch (PDOException $e) {}
-        try {
-            $stmt = $pdo->prepare("
-                SELECT COALESCE(SUM(montant_credit - montant_debit), 0) as total
-                FROM ecritures_comptables e
-                INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-                WHERE pc.numero_compte BETWEEN :debut AND :fin
-                  AND e.date_ecriture <= :date_fin
-            ");
-            $stmt->execute([':debut' => $cat['amort_debut'], ':fin' => $cat['amort_debut'] . '99', ':date_fin' => $date_fin_periode]);
-            $amort = abs((float)$stmt->fetch()['total']);
-        } catch (PDOException $e) {}
-        $net = $brut - $amort;
-        $immobilisations_data[$code] = [
-            'brut'   => $brut,
-            'amort'  => $amort,
-            'net'    => $net,
-            'libelle'=> $cat['libelle'],
-            'details'=> []
-        ];
-    }
-}
+$lignes_excel = [
+    // Code => [libelle, parent (pour agrégat), type de regroupement dans la table immobilisations]
+    'D1A' => ['Immobilisations financières', null, 'aggregate', ['D1E','D1L','D1S']],
+    'D1E' => ['Titres de participation', 'D1A', 'type', 'Immobilisations financières'],
+    'D1L' => ['Titres d\'investissement', 'D1A', 'type', 'Immobilisations financières'],
+    'D1S' => ['Dépôts et cautionnements', 'D1A', 'type', 'Immobilisations financières'],
+    'D23' => ['Immobilisations en cours', null, 'type', 'Immobilisations en cours'],
+    'D24' => ['Incorporelles', null, 'type', 'Immobilisations incorporelles'],
+    'D25' => ['Corporelles', null, 'type', 'Immobilisations corporelles'],
+    'D30' => ['Immobilisations d\'exploitation', null, 'aggregate', ['D31','D36']],
+    'D31' => ['Incorporelles', 'D30', 'type', 'Immobilisations incorporelles d\'exploitation'],
+    'D32' => ['Droit au bail', 'D31', 'type', 'Immobilisations incorporelles d\'exploitation - droit au bail'],
+    'D33' => ['Autres éléments du fonds commercial', 'D31', 'type', 'Immobilisations incorporelles d\'exploitation - fonds commercial'],
+    'D34' => ['Frais d\'établissement', 'D31', 'type', 'Immobilisations incorporelles d\'exploitation - frais d\'établissement'],
+    'D35' => ['Autres immobilisations incorporelles', 'D31', 'type', 'Immobilisations incorporelles d\'exploitation - autres'],
+    'D36' => ['Corporelles', 'D30', 'type', 'Immobilisations corporelles d\'exploitation'],
+    'D40' => ['Immobilisations hors exploitation', null, 'aggregate', ['D41','D45']],
+    'D41' => ['Incorporelles', 'D40', 'type', 'Immobilisations incorporelles hors exploitation'],
+    'D42' => ['Droit au bail', 'D41', 'type', 'Immobilisations incorporelles hors exploitation - droit au bail'],
+    'D43' => ['Autres éléments du fonds commercial', 'D41', 'type', 'Immobilisations incorporelles hors exploitation - fonds commercial'],
+    'D44' => ['Autres immobilisations incorporelles', 'D41', 'type', 'Immobilisations incorporelles hors exploitation - autres'],
+    'D45' => ['Corporelles', 'D40', 'type', 'Immobilisations corporelles hors exploitation'],
+    'DIMF_2015_1_21' => ['Immobilisations acquises par réalisation de garantie', null, 'garantie', null],
+    'D46' => ['Incorporelles', 'DIMF_2015_1_21', 'garantie_incorporelles', null],
+    'D47' => ['Corporelles', 'DIMF_2015_1_21', 'garantie_corporelles', null],
+];
 
 // ============================================================
-// MAPPING ET CONSTRUCTION DU TABLEAU DES LIGNES
+// MAPPING : type_immobilisation -> code Excel
 // ============================================================
-$map_type_to_code = [
-    'Immobilisations financières' => 'D1A',
+$type_to_code = [
+    'Immobilisations financières' => 'D1E', // on affecte aux titres de participation par défaut
     'Titres de participation' => 'D1E',
     'Titres d\'investissement' => 'D1L',
     'Dépôts et cautionnements' => 'D1S',
-    'Immobilisations d\'exploitation' => 'D30',
-    'Immobilisations incorporelles' => 'D31',
+    'Immobilisations en cours' => 'D23',
+    'Immobilisations incorporelles' => 'D24',
+    'Immobilisations corporelles' => 'D25',
+    'Immobilisations d\'exploitation' => 'D30', // non utilisé directement
     'Immobilisations incorporelles d\'exploitation' => 'D31',
-    'Immobilisations corporelles' => 'D36',
     'Immobilisations corporelles d\'exploitation' => 'D36',
     'Immobilisations hors exploitation' => 'D40',
     'Immobilisations incorporelles hors exploitation' => 'D41',
     'Immobilisations corporelles hors exploitation' => 'D45',
 ];
 
-$codes_standards = [
-    'D1A' => 'Immobilisations financières',
-    'D1E' => 'Titres de participation',
-    'D1L' => 'Titres d\'investissement',
-    'D1S' => 'Dépôts et cautionnements',
-    'D30' => 'Immobilisations d\'exploitation',
-    'D31' => 'Immobilisations incorporelles d\'exploitation',
-    'D36' => 'Immobilisations corporelles d\'exploitation',
-    'D40' => 'Immobilisations hors exploitation',
-    'D41' => 'Immobilisations incorporelles hors exploitation',
-    'D45' => 'Immobilisations corporelles hors exploitation',
-];
-
-$tableau_immobilisations = [];
-foreach ($codes_standards as $code => $lib) {
-    $tableau_immobilisations[$code] = [
-        'code' => $code,
-        'libelle' => $lib,
-        'brut' => 0,
-        'amort' => 0,
-        'net' => 0,
-        'is_title' => false
-    ];
+// ============================================================
+// AGRÉGATION DES DONNÉES PAR CODE
+// ============================================================
+$data = [];
+foreach ($lignes_excel as $code => $info) {
+    $data[$code] = ['brut' => 0, 'amort' => 0, 'net' => 0, 'libelle' => $info[0], 'parent' => $info[1], 'type' => $info[2]];
 }
 
-$lignes_supplementaires = [];
-foreach ($immobilisations_data as $type => $data) {
-    $code_d = null;
-    foreach ($map_type_to_code as $type_key => $code) {
-        if (stripos($type, $type_key) !== false) {
-            $code_d = $code;
-            break;
+// Remplir à partir des immobilisations
+foreach ($immos as $immo) {
+    $type = $immo['type_immobilisation'];
+    $code = $type_to_code[$type] ?? null;
+    if ($code && isset($data[$code])) {
+        $data[$code]['brut'] += (float)$immo['brut'];
+        $data[$code]['amort'] += (float)$immo['amort'];
+        $data[$code]['net'] += (float)$immo['net'];
+    } else {
+        // Si le type n'est pas reconnu, on le range dans la catégorie la plus générique (ex: D24 ou D25)
+        if (stripos($type, 'incorporelle') !== false) {
+            $code = 'D24';
+        } elseif (stripos($type, 'corporelle') !== false) {
+            $code = 'D25';
+        } else {
+            $code = 'D23'; // par défaut immobilisations en cours
+        }
+        if (isset($data[$code])) {
+            $data[$code]['brut'] += (float)$immo['brut'];
+            $data[$code]['amort'] += (float)$immo['amort'];
+            $data[$code]['net'] += (float)$immo['net'];
         }
     }
-    if ($code_d && isset($tableau_immobilisations[$code_d])) {
-        $tableau_immobilisations[$code_d]['brut']  += $data['brut'];
-        $tableau_immobilisations[$code_d]['amort'] += $data['amort'];
-        $tableau_immobilisations[$code_d]['net']   += $data['net'];
-    } else {
-        $lignes_supplementaires[] = [
-            'code' => $type,
-            'libelle' => $type,
-            'brut' => $data['brut'],
-            'amort' => $data['amort'],
-            'net' => $data['net'],
-            'is_title' => false
-        ];
+}
+
+// ============================================================
+// CALCUL DES AGRÉGATS (D1A, D30, D40, DIMF_2015_1_21)
+// ============================================================
+foreach ($lignes_excel as $code => $info) {
+    if ($info[2] === 'aggregate') {
+        $children = $info[3];
+        $brut = $amort = $net = 0;
+        foreach ($children as $child) {
+            if (isset($data[$child])) {
+                $brut += $data[$child]['brut'];
+                $amort += $data[$child]['amort'];
+                $net += $data[$child]['net'];
+            }
+        }
+        $data[$code]['brut'] = $brut;
+        $data[$code]['amort'] = $amort;
+        $data[$code]['net'] = $net;
     }
 }
 
-$total_brut = $total_amort = $total_net = 0;
-foreach ($tableau_immobilisations as $item) {
-    $total_brut  += $item['brut'];
-    $total_amort += $item['amort'];
-    $total_net   += $item['net'];
-}
-foreach ($lignes_supplementaires as $item) {
-    $total_brut  += $item['brut'];
-    $total_amort += $item['amort'];
-    $total_net   += $item['net'];
-}
-
-$tableau_immobilisations = array_merge($tableau_immobilisations, $lignes_supplementaires);
-$tableau_immobilisations = array_values($tableau_immobilisations);
-
 // ============================================================
-// IMMOBILISATIONS ACQUISES PAR RÉALISATION DE GARANTIE
+// IMMOBILISATIONS ACQUISES PAR RÉALISATION DE GARANTIE (Z03)
 // ============================================================
 $immobilisations_garantie = 0;
 try {
@@ -213,6 +163,11 @@ try {
     $stmt->execute();
     $immobilisations_garantie = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) {}
+
+// On affecte à DIMF_2015_1_21 (et éventuellement D46, D47 si on a des détails)
+$data['DIMF_2015_1_21']['brut'] = $immobilisations_garantie;
+$data['DIMF_2015_1_21']['net'] = $immobilisations_garantie;
+// D46 et D47 restent à zéro (pas de détail)
 
 // ============================================================
 // AMORTISSEMENTS DE L'EXERCICE
@@ -224,13 +179,15 @@ try {
     $amortissements_exercice = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) {}
 
+$total_brut = array_sum(array_column($data, 'brut'));
+$total_amort = array_sum(array_column($data, 'amort'));
+$total_net = array_sum(array_column($data, 'net'));
 $taux_amortissement = ($total_brut > 0) ? ($total_amort / $total_brut) * 100 : 0;
 
 // ============================================================
-// CLASSE PDF avec mb_convert_encoding
+// CLASSE PDF (FPDF) avec mb_convert_encoding
 // ============================================================
 if ($format === 'pdf') {
-
     class PDF_DIMF extends FPDF {
         public $codeDimf = 'DIMF_2015';
         public $titreDimf = 'État des valeurs immobilisées';
@@ -328,8 +285,8 @@ if ($format === 'pdf') {
     $pdf->AddPage();
 
     $cols = [
-        ['label' => 'CODE', 'w' => 30, 'align' => 'L'],
-        ['label' => 'LIBELLES', 'w' => 120, 'align' => 'L'],
+        ['label' => 'CODE', 'w' => 35, 'align' => 'L'],
+        ['label' => 'LIBELLÉS', 'w' => 130, 'align' => 'L'],
         ['label' => 'Montant brut (FCFA)', 'w' => 60, 'align' => 'R'],
         ['label' => 'Amortissements/Provisions (FCFA)', 'w' => 60, 'align' => 'R'],
         ['label' => 'Montants nets (FCFA)', 'w' => 60, 'align' => 'R'],
@@ -338,31 +295,43 @@ if ($format === 'pdf') {
     $pdf->SectionTitle('VALEURS IMMOBILISEES');
     $pdf->TableHeader($cols);
 
-    foreach ($tableau_immobilisations as $item) {
+    // Parcourir les lignes dans l'ordre du fichier Excel
+    $ordre = ['D1A','D1E','D1L','D1S','D23','D24','D25','D30','D31','D32','D33','D34','D35','D36','D40','D41','D42','D43','D44','D45','DIMF_2015_1_21','D46','D47'];
+    foreach ($ordre as $code) {
+        if (!isset($data[$code])) continue;
+        $ligne = $data[$code];
+        $style = '';
+        if (in_array($code, ['D1A','D30','D40','DIMF_2015_1_21'])) {
+            $style = 'subtotal'; // titres de section
+        }
         $pdf->TableRow($cols, [
-            $item['code'],
-            $item['libelle'],
-            PDF_DIMF::montant($item['brut']),
-            PDF_DIMF::montant($item['amort']),
-            PDF_DIMF::montant($item['net'])
-        ]);
+            $code,
+            PDF_DIMF::u($ligne['libelle']),
+            PDF_DIMF::montant($ligne['brut']),
+            PDF_DIMF::montant($ligne['amort']),
+            PDF_DIMF::montant($ligne['net'])
+        ], $style);
     }
-    $pdf->TableRow($cols, [
-        'Z03',
-        'Immobilisations acquises par réalisation de garantie',
-        PDF_DIMF::montant($immobilisations_garantie),
-        '0',
-        PDF_DIMF::montant($immobilisations_garantie)
-    ]);
 
-    $total_brut_final = $total_brut + $immobilisations_garantie;
-    $total_net_final = $total_net + $immobilisations_garantie;
+    // Ligne TOTAL (somme de toutes les lignes sauf les agrégats ? dans le fichier Excel, le total est la somme de toutes les lignes)
+    // On calcule la somme de toutes les lignes détaillées (non agrégats)
+    $total_brut = $total_amort = $total_net = 0;
+    foreach ($data as $code => $ligne) {
+        if (in_array($code, ['D1A','D30','D40','DIMF_2015_1_21'])) continue; // on ne double pas les agrégats
+        $total_brut += $ligne['brut'];
+        $total_amort += $ligne['amort'];
+        $total_net += $ligne['net'];
+    }
+    // On ajoute les immobilisations de garantie si non incluses
+    $total_brut += $data['DIMF_2015_1_21']['brut'];
+    $total_net += $data['DIMF_2015_1_21']['net'];
+
     $pdf->TableRow($cols, [
         '',
         'TOTAL',
-        PDF_DIMF::montant($total_brut_final),
+        PDF_DIMF::montant($total_brut),
         PDF_DIMF::montant($total_amort),
-        PDF_DIMF::montant($total_net_final)
+        PDF_DIMF::montant($total_net)
     ], 'total');
 
     $pdf->Ln(8);
@@ -389,27 +358,44 @@ if ($format === 'excel') {
         th, td { border: 1px solid #999; padding: 8px; text-align: left; }
         th { background: #f2f2f2; }
         .text-right { text-align: right; }
+        .subtotal { background: #f8fafc; font-weight: bold; }
+        .total { background: #e8f5e9; font-weight: bold; }
     </style></head><body>';
     echo '<h2>DIMF_2015 - État des valeurs immobilisées</h2>';
     echo '<p>Période : ' . $lib_periode . '</p>';
     echo '<table>';
     echo '<tr><th>CODE</th><th>LIBELLÉS</th><th class="text-right">Montant brut (FCFA)</th><th class="text-right">Amortissements (FCFA)</th><th class="text-right">Montants nets (FCFA)</th></tr>';
-    foreach ($tableau_immobilisations as $item) {
-        echo '<tr><' . 'td>' . htmlspecialchars($item['code']) . '</td>';
-        echo '<td>' . htmlspecialchars($item['libelle']) . '</td>';
-        echo '<td class="text-right">' . number_format($item['brut'],0,',',' ') . '</td>';
-        echo '<td class="text-right">' . number_format($item['amort'],0,',',' ') . '</td>';
-        echo '<td class="text-right">' . number_format($item['net'],0,',',' ') . '</td>';
+    $ordre = ['D1A','D1E','D1L','D1S','D23','D24','D25','D30','D31','D32','D33','D34','D35','D36','D40','D41','D42','D43','D44','D45','DIMF_2015_1_21','D46','D47'];
+    foreach ($ordre as $code) {
+        if (!isset($data[$code])) continue;
+        $ligne = $data[$code];
+        $class = '';
+        if (in_array($code, ['D1A','D30','D40','DIMF_2015_1_21'])) $class = 'subtotal';
+        echo '<tr class="' . $class . '"><td>' . $code . '</td>';
+        echo '<td>' . htmlspecialchars($ligne['libelle']) . '</td>';
+        echo '<td class="text-right">' . number_format($ligne['brut'],0,',',' ') . '</td>';
+        echo '<td class="text-right">' . number_format($ligne['amort'],0,',',' ') . '</td>';
+        echo '<td class="text-right">' . number_format($ligne['net'],0,',',' ') . '</td>';
         echo '</tr>';
     }
-    echo '<tr><' . 'td>Z03</td><td>Immobilisations acquises par réalisation de garantie</td>';
-    echo '<td class="text-right">' . number_format($immobilisations_garantie,0,',',' ') . '</td><td class="text-right">0</td>';
-    echo '<td class="text-right">' . number_format($immobilisations_garantie,0,',',' ') . '</td></tr>';
-    echo '<tr style="background:#e8f5e9;"><td colspan="2"><strong>TOTAL</strong></td>';
-    echo '<td class="text-right"><strong>' . number_format($total_brut + $immobilisations_garantie,0,',',' ') . '</strong></td>';
+    // TOTAL
+    $total_brut = $total_amort = $total_net = 0;
+    foreach ($data as $code => $ligne) {
+        if (in_array($code, ['D1A','D30','D40','DIMF_2015_1_21'])) continue;
+        $total_brut += $ligne['brut'];
+        $total_amort += $ligne['amort'];
+        $total_net += $ligne['net'];
+    }
+    $total_brut += $data['DIMF_2015_1_21']['brut'];
+    $total_net += $data['DIMF_2015_1_21']['net'];
+    echo '<tr class="total"><td colspan="2"><strong>TOTAL</strong></td>';
+    echo '<td class="text-right"><strong>' . number_format($total_brut,0,',',' ') . '</strong></td>';
     echo '<td class="text-right"><strong>' . number_format($total_amort,0,',',' ') . '</strong></td>';
-    echo '<td class="text-right"><strong>' . number_format($total_net + $immobilisations_garantie,0,',',' ') . '</strong></td></tr>';
-    echo '</table></body></html>';
+    echo '<td class="text-right"><strong>' . number_format($total_net,0,',',' ') . '</strong></td></tr>';
+    echo '</table>';
+    echo '<p><strong>Dotations aux amortissements :</strong> ' . number_format($amortissements_exercice,0,',',' ') . ' FCFA</p>';
+    echo '<p><strong>Taux d\'amortissement global :</strong> ' . number_format($taux_amortissement,2) . '%</p>';
+    echo '</body></html>';
     exit;
 }
 
@@ -424,8 +410,8 @@ if ($format === 'excel') {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DIMF_2015 - État des valeurs immobilisées</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family:'Inter',system-ui,sans-serif; background:#f1f5f9; padding:24px; }
@@ -435,7 +421,7 @@ if ($format === 'excel') {
         .subtitle { font-size:0.8rem; color:#e0f2fe; }
         .badge { background:#2563eb; color:white; padding:4px 12px; border-radius:30px; display:inline-block; margin-top:8px; }
         .btn-group { display:flex; gap:12px; }
-        .btn-excel, .btn-pdf { display:inline-flex; align-items:center; gap:8px; padding:8px 20px; border-radius:40px; font-weight:500; border:none; cursor:pointer; text-decoration:none; }
+        .btn-excel, .btn-pdf { display:inline-flex; align-items:center; gap:8px; padding:8px 20px; border-radius:40px; font-weight:500; border:none; cursor:pointer; }
         .btn-excel { background:#10b981; color:white; }
         .btn-excel:hover { background:#059669; }
         .btn-pdf { background:#ef4444; color:white; }
@@ -454,6 +440,7 @@ if ($format === 'excel') {
         th { background:#f8fafc; font-weight:600; }
         .text-right { text-align:right; font-family:'Courier New',monospace; }
         .total-row { background:#f0fdf4; font-weight:700; }
+        .subtotal-row { background:#f8fafc; font-weight:600; }
         .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px; border-radius:16px; display:flex; align-items:center; gap:14px; margin-bottom:20px; }
         .footer { text-align:center; font-size:0.75rem; color:#6b7280; margin-top:16px; padding:16px; }
         @media (max-width:768px) { body { padding:12px; } .filters-row { flex-direction:column; } }
@@ -532,67 +519,45 @@ if ($format === 'excel') {
                         <tr><th>CODE</th><th>LIBELLÉS</th><th class="text-right">Montant brut (FCFA)</th><th class="text-right">Amortissements/Provisions (FCFA)</th><th class="text-right">Montants nets (FCFA)</th></tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($tableau_immobilisations as $item): ?>
-                        <tr>
-                            <td><?= htmlspecialchars($item['code']) ?></td>
-                            <td><?= htmlspecialchars($item['libelle']) ?></td>
-                            <td class="text-right"><?= number_format($item['brut'], 0, ',', ' ') ?></td>
-                            <td class="text-right"><?= number_format($item['amort'], 0, ',', ' ') ?></td>
-                            <td class="text-right"><?= number_format($item['net'], 0, ',', ' ') ?></td>
+                        <?php
+                        $ordre = ['D1A','D1E','D1L','D1S','D23','D24','D25','D30','D31','D32','D33','D34','D35','D36','D40','D41','D42','D43','D44','D45','DIMF_2015_1_21','D46','D47'];
+                        foreach ($ordre as $code):
+                            if (!isset($data[$code])) continue;
+                            $ligne = $data[$code];
+                            $class = '';
+                            if (in_array($code, ['D1A','D30','D40','DIMF_2015_1_21'])) $class = 'subtotal-row';
+                        ?>
+                        <tr class="<?= $class ?>">
+                            <td><?= $code ?></td>
+                            <td><?= htmlspecialchars($ligne['libelle']) ?></td>
+                            <td class="text-right"><?= number_format($ligne['brut'],0,',',' ') ?></td>
+                            <td class="text-right"><?= number_format($ligne['amort'],0,',',' ') ?></td>
+                            <td class="text-right"><?= number_format($ligne['net'],0,',',' ') ?></td>
                         </tr>
                         <?php endforeach; ?>
-                        <tr>
-                            <td>Z03</td>
-                            <td>Immobilisations acquises par réalisation de garantie</td>
-                            <td class="text-right"><?= number_format($immobilisations_garantie, 0, ',', ' ') ?></td>
-                            <td class="text-right">0</td>
-                            <td class="text-right"><?= number_format($immobilisations_garantie, 0, ',', ' ') ?></td>
-                        </tr>
+                        <?php
+                        // Calcul du TOTAL (somme des lignes détaillées)
+                        $total_brut = $total_amort = $total_net = 0;
+                        foreach ($data as $code => $ligne) {
+                            if (in_array($code, ['D1A','D30','D40','DIMF_2015_1_21'])) continue;
+                            $total_brut += $ligne['brut'];
+                            $total_amort += $ligne['amort'];
+                            $total_net += $ligne['net'];
+                        }
+                        $total_brut += $data['DIMF_2015_1_21']['brut'];
+                        $total_net += $data['DIMF_2015_1_21']['net'];
+                        ?>
                         <tr class="total-row">
                             <td colspan="2"><strong>TOTAL</strong></td>
-                            <td class="text-right"><strong><?= number_format($total_brut + $immobilisations_garantie, 0, ',', ' ') ?></strong></td>
-                            <td class="text-right"><strong><?= number_format($total_amort, 0, ',', ' ') ?></strong></td>
-                            <td class="text-right"><strong><?= number_format($total_net + $immobilisations_garantie, 0, ',', ' ') ?></strong></td>
+                            <td class="text-right"><strong><?= number_format($total_brut,0,',',' ') ?></strong></td>
+                            <td class="text-right"><strong><?= number_format($total_amort,0,',',' ') ?></strong></td>
+                            <td class="text-right"><strong><?= number_format($total_net,0,',',' ') ?></strong></td>
                         </tr>
                     </tbody>
                 </table>
             </div>
         </div>
     </div>
-
-    <!-- Détail des immobilisations (si disponible) -->
-    <?php if (!empty($immobilisations_data)): ?>
-    <div class="card">
-        <div class="card-header"><i class="fas fa-list-ul"></i> DÉTAIL DES IMMOBILISATIONS</div>
-        <div class="card-body">
-            <div class="table-wrapper">
-                <table>
-                    <thead><th>Type</th><th>Libellé</th><th class="text-right">Brut</th><th class="text-right">Amort</th><th class="text-right">Net</th></thead>
-                    <tbody>
-                        <?php foreach ($immobilisations_data as $type => $data): ?>
-                            <?php if (!empty($data['details'])): ?>
-                                <tr><td colspan="5"><strong><?= htmlspecialchars($type) ?></strong></td></tr>
-                                <?php foreach ($data['details'] as $detail): ?>
-                                    <tr>
-                                        <td><?= htmlspecialchars($detail['libelle']) ?></td>
-                                        <td class="text-right"><?= number_format($detail['brut'],0,',',' ') ?></td>
-                                        <td class="text-right"><?= number_format($detail['amort'],0,',',' ') ?></td>
-                                        <td class="text-right"><?= number_format($detail['net'],0,',',' ') ?></td>
-                                    </tr>
-                                <?php endforeach; ?>
-                                <tr><td colspan="2"><strong>Sous-total</strong></td>
-                                    <td class="text-right"><strong><?= number_format($data['brut'],0,',',' ') ?></strong></td>
-                                    <td class="text-right"><strong><?= number_format($data['amort'],0,',',' ') ?></strong></td>
-                                    <td class="text-right"><strong><?= number_format($data['net'],0,',',' ') ?></strong></td>
-                                </tr>
-                            <?php endif; ?>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    <?php endif; ?>
 
     <!-- Amortissements de l'exercice -->
     <div class="card">
@@ -601,8 +566,8 @@ if ($format === 'excel') {
             <div class="info-box">
                 <i class="fas fa-calculator"></i>
                 <div>
-                    <strong>Dotations aux amortissements :</strong> <?= number_format($amortissements_exercice, 0, ',', ' ') ?> FCFA<br>
-                    <strong>Taux d'amortissement global :</strong> <?= number_format($taux_amortissement, 2) ?>%
+                    <strong>Dotations aux amortissements :</strong> <?= number_format($amortissements_exercice,0,',',' ') ?> FCFA<br>
+                    <strong>Taux d'amortissement global :</strong> <?= number_format($taux_amortissement,2) ?>%
                 </div>
             </div>
         </div>
@@ -611,7 +576,6 @@ if ($format === 'excel') {
     <div class="footer"><i class="fas fa-calendar-alt"></i> Document généré le <?= date('d/m/Y à H:i:s') ?></div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
     function updateDynamicSelect() {
         const type = document.getElementById('typePeriodeSelect').value;
@@ -622,15 +586,21 @@ if ($format === 'excel') {
         let html = '';
         if (type === 'mensuel') {
             html = '<label>Mois</label><select name="mois" id="moisSelect">';
-            for (let m = 1; m <= 12; m++) { html += `<option value="${m}" ${m===currentMois?'selected':''}>${String(m).padStart(2,'0')} - ${new Date(2000,m-1,1).toLocaleString('fr',{month:'long'})}</option>`; }
+            for (let m = 1; m <= 12; m++) {
+                html += `<option value="${m}" ${m===currentMois?'selected':''}>${String(m).padStart(2,'0')} - ${new Date(2000,m-1,1).toLocaleString('fr',{month:'long'})}</option>`;
+            }
             html += '</select>';
         } else if (type === 'trimestre') {
             html = '<label>Trimestre</label><select name="trimestre" id="trimestreSelect">';
-            for (let t = 1; t <= 4; t++) { html += `<option value="${t}" ${t===currentTrimestre?'selected':''}>${t}${t===1?'er':'ème'} Trimestre</option>`; }
+            for (let t = 1; t <= 4; t++) {
+                html += `<option value="${t}" ${t===currentTrimestre?'selected':''}>${t}${t===1?'er':'ème'} Trimestre</option>`;
+            }
             html += '</select>';
         } else if (type === 'semestre') {
             html = '<label>Semestre</label><select name="semestre" id="semestreSelect">';
-            for (let s = 1; s <= 2; s++) { html += `<option value="${s}" ${s===currentSemestre?'selected':''}>${s}${s===1?'er':'e'} semestre</option>`; }
+            for (let s = 1; s <= 2; s++) {
+                html += `<option value="${s}" ${s===currentSemestre?'selected':''}>${s}${s===1?'er':'e'} semestre</option>`;
+            }
             html += '</select>';
         } else {
             html = '<label>Période</label><input type="text" disabled value="Année complète">';
@@ -645,9 +615,8 @@ if ($format === 'excel') {
         input.name = 'format';
         input.value = 'pdf';
         form.appendChild(input);
-        form.target = '_blank';
+        // PDF dans la même fenêtre
         form.submit();
-        form.target = '';
         form.removeChild(input);
     }
 

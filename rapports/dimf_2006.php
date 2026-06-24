@@ -1,6 +1,6 @@
 <?php
 // DIMF_2006.php - État des biens donnés en crédit-bail
-// FPDF intégré, gestion POST, Bootstrap
+// Alimentation depuis immobilisations + saisie manuelle pour ZA6 et ZA7
 
 session_start();
 
@@ -76,25 +76,29 @@ class PDF_DIMF extends FPDF {
     }
 
     function TableRow($cols, $data, $style = '') {
+        $fill = false;
+        $this->SetTextColor(15, 23, 42);
+        $this->SetDrawColor(226, 232, 240);
+        $this->SetLineWidth(0.1);
         switch ($style) {
             case 'subtotal':
                 $this->SetFillColor(248, 250, 252);
                 $this->SetFont('Arial', 'B', 8);
-                $fill = true; break;
+                $fill = true;
+                break;
             case 'total':
                 $this->SetFillColor(240, 253, 244);
                 $this->SetFont('Arial', 'B', 8.5);
-                $fill = true; break;
+                $fill = true;
+                break;
             default:
                 $this->SetFillColor(255, 255, 255);
                 $this->SetFont('Arial', '', 7.5);
-                $fill = false; break;
+                $fill = false;
+                break;
         }
-        $this->SetTextColor(15, 23, 42);
-        $this->SetDrawColor(226, 232, 240);
-        $this->SetLineWidth(0.1);
         foreach ($cols as $i => $col) {
-            $val   = isset($data[$i]) ? $data[$i] : '';
+            $val = isset($data[$i]) ? $data[$i] : '';
             $align = isset($col['align']) ? $col['align'] : 'L';
             $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
         }
@@ -107,7 +111,7 @@ class PDF_DIMF extends FPDF {
 }
 
 // ============================================================
-// PARAMÈTRES (priorité POST > GET > défaut)
+// PARAMÈTRES
 // ============================================================
 $exercice     = isset($_POST['exercice'])     ? (int)$_POST['exercice']     : (isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y'));
 $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode']      : (isset($_GET['type_periode']) ? $_GET['type_periode'] : 'mensuel');
@@ -121,134 +125,186 @@ switch ($type_periode) {
     case 'annuel':    $mois = 12; break;
 }
 
-$date_fin_periode = date('Y-m-t', strtotime($exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01'));
-
 // ============================================================
-// TRAITEMENT DU FORMULAIRE D'AJOUT (POST)
+// TRAITEMENT DU FORMULAIRE DE SAISIE (POST)
 // ============================================================
-$message_ajout = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['type_contrat'])) {
-    $type_contrat = trim($_POST['type_contrat'] ?? '');
-    $duree        = (int)($_POST['duree'] ?? 0);
-    $montant_brut = (float)($_POST['montant_brut'] ?? 0);
-    $date_debut   = $_POST['date_debut'] ?? '';
-    $date_fin     = $_POST['date_fin'] ?? '';
-    $exo_post     = (int)($_POST['exercice_form'] ?? date('Y'));
+$message = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_credit_bail') {
+    $codes = $_POST['code'] ?? [];
+    $bruts = $_POST['montant_brut'] ?? [];
+    $amorts = $_POST['amortissements'] ?? [];
+    $nets = $_POST['montant_net'] ?? [];
+    $durees = $_POST['duree'] ?? [];
+    $libelles = $_POST['libelle'] ?? [];
 
-    if ($type_contrat && $montant_brut > 0 && $date_debut) {
-        try {
-            $pdo->exec("CREATE TABLE IF NOT EXISTS credit_bail_contrats (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                numero_contrat VARCHAR(50),
-                type VARCHAR(50),
-                duree INT,
-                date_debut DATE,
-                date_fin DATE,
-                montant_brut DECIMAL(15,2) DEFAULT 0,
-                valeur_nette DECIMAL(15,2) DEFAULT 0,
-                statut VARCHAR(30) DEFAULT 'actif',
-                exercice INT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )");
+    foreach ($codes as $index => $code) {
+        $code = trim($code);
+        if (empty($code)) continue;
+        $brut = (float)($bruts[$index] ?? 0);
+        $amort = (float)($amorts[$index] ?? 0);
+        $net = (float)($nets[$index] ?? 0);
+        $duree = trim($durees[$index] ?? '');
+        $libelle = trim($libelles[$index] ?? '');
 
-            $stmt_num = $pdo->query("SELECT COUNT(*) as n FROM credit_bail_contrats");
-            $num = ($stmt_num->fetch()['n'] ?? 0) + 1;
-            $numero = 'CB-' . date('Y') . '-' . str_pad($num, 4, '0', STR_PAD_LEFT);
-
-            $stmt_ins = $pdo->prepare("INSERT INTO credit_bail_contrats (numero_contrat, type, duree, date_debut, date_fin, montant_brut, valeur_nette, statut, exercice) VALUES (:num, :type, :duree, :dd, :df, :mb, :mb, 'actif', :exo)");
-            $stmt_ins->execute([
-                ':num'  => $numero,
-                ':type' => $type_contrat,
-                ':duree'=> $duree,
-                ':dd'   => $date_debut,
-                ':df'   => $date_fin ?: null,
-                ':mb'   => $montant_brut,
-                ':exo'  => $exo_post
+        $stmt_check = $pdo->prepare("SELECT id FROM z_bceao_credit_bail WHERE exercice = :exo AND code = :code");
+        $stmt_check->execute([':exo' => $exercice, ':code' => $code]);
+        if ($stmt_check->fetch()) {
+            $stmt_upd = $pdo->prepare("UPDATE z_bceao_credit_bail SET 
+                libelle = :libelle,
+                duree = :duree,
+                montant_brut = :brut,
+                amortissements_provisions = :amort,
+                montant_net = :net,
+                statut = 'actif'
+                WHERE exercice = :exo AND code = :code");
+            $stmt_upd->execute([
+                ':libelle' => $libelle,
+                ':duree' => $duree,
+                ':brut' => $brut,
+                ':amort' => $amort,
+                ':net' => $net,
+                ':exo' => $exercice,
+                ':code' => $code
             ]);
-            $message_ajout = "<div class='alert-success'><i class='fas fa-check-circle'></i> Contrat $numero enregistré.</div>";
-        } catch (PDOException $e) {
-            $message_ajout = "<div class='alert-error'><i class='fas fa-exclamation-triangle'></i> Erreur : " . htmlspecialchars($e->getMessage()) . "</div>";
+        } else {
+            $stmt_ins = $pdo->prepare("INSERT INTO z_bceao_credit_bail 
+                (exercice, code, libelle, duree, montant_brut, amortissements_provisions, montant_net, statut)
+                VALUES (:exo, :code, :libelle, :duree, :brut, :amort, :net, 'actif')");
+            $stmt_ins->execute([
+                ':exo' => $exercice,
+                ':code' => $code,
+                ':libelle' => $libelle,
+                ':duree' => $duree,
+                ':brut' => $brut,
+                ':amort' => $amort,
+                ':net' => $net
+            ]);
         }
-    } else {
-        $message_ajout = "<div class='alert-error'><i class='fas fa-exclamation-triangle'></i> Champs obligatoires manquants.</div>";
     }
+    $message = "<div class='alert-success'><i class='fas fa-check-circle'></i> Données enregistrées avec succès.</div>";
 }
 
 // ============================================================
-// STRUCTURE DES CATÉGORIES (inchangée)
+// RÉCUPÉRATION DES DONNÉES DEPUIS immobilisations POUR ZA2 à ZA5
 // ============================================================
-$categories = [
-    'ZA1' => ['code' => 'ZA1', 'libelle' => 'CRÉDIT-BAIL', 'is_parent' => true],
-    'ZA2' => ['code' => 'ZA2', 'libelle' => 'Crédit-bail Mobilier', 'parent' => 'ZA1'],
-    'ZA3' => ['code' => 'ZA3', 'libelle' => 'Crédit-bail Immobilier', 'parent' => 'ZA1'],
-    'ZA4' => ['code' => 'ZA4', 'libelle' => 'Crédit-bail sur actifs incorporels', 'parent' => 'ZA1'],
-    'ZA5' => ['code' => 'ZA5', 'libelle' => "Location avec option d'achat", 'parent' => 'ZA1'],
-    'ZA6' => ['code' => 'ZA6', 'libelle' => 'LOCATION-VENTE', 'is_parent' => true],
-    'ZA7' => ['code' => 'ZA7', 'libelle' => 'CRÉANCES EN SOUFFRANCE SUR OPÉRATIONS DE CRÉDIT-BAIL', 'is_parent' => true]
+$map_types = [
+    'ZA2' => ['type' => 'MOBILIER', 'libelle' => 'Crédit-bail Mobilier'],
+    'ZA3' => ['type' => 'IMMOBILIER', 'libelle' => 'Crédit-bail Immobilier'],
+    'ZA4' => ['type' => 'INCORPOREL', 'libelle' => 'Crédit-bail sur actifs incorporels'],
+    'ZA5' => ['type' => 'LOA', 'libelle' => 'Location avec option d\'achat']
 ];
 
-$data = [];
-foreach ($categories as $key => $cat) {
-    $data[$key] = [
-        'code'          => $cat['code'],
-        'libelle'       => $cat['libelle'],
-        'duree'         => '',
-        'montant_brut'  => 0.0,
-        'amortissements'=> 0.0,
-        'montant_net'   => 0.0,
-        'is_parent'     => !empty($cat['is_parent']),
-        'parent'        => $cat['parent'] ?? null
+$data_from_immobilisations = [];
+$total_brut_auto = 0;
+$total_amort_auto = 0;
+$total_net_auto = 0;
+
+try {
+    $colCheck = $pdo->query("SHOW COLUMNS FROM immobilisations LIKE 'type_credit_bail'");
+    if ($colCheck->rowCount() > 0) {
+        foreach ($map_types as $code => $info) {
+            $stmt = $pdo->prepare("SELECT 
+                COALESCE(SUM(montant_achat), 0) as brut,
+                COALESCE(SUM(amortissement_total), 0) as amort
+                FROM immobilisations 
+                WHERE type_credit_bail = :type AND statut = 'actif'");
+            $stmt->execute([':type' => $info['type']]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $brut = (float)$row['brut'];
+            $amort = (float)$row['amort'];
+            $net = $brut - $amort;
+            $data_from_immobilisations[$code] = [
+                'brut' => $brut,
+                'amort' => $amort,
+                'net' => $net,
+                'libelle' => $info['libelle']
+            ];
+            $total_brut_auto += $brut;
+            $total_amort_auto += $amort;
+            $total_net_auto += $net;
+        }
+    } else {
+        foreach ($map_types as $code => $info) {
+            $data_from_immobilisations[$code] = [
+                'brut' => 0,
+                'amort' => 0,
+                'net' => 0,
+                'libelle' => $info['libelle']
+            ];
+        }
+    }
+} catch (PDOException $e) {
+    // ignore
+}
+
+// ============================================================
+// RÉCUPÉRATION DES DONNÉES EXISTANTES DANS z_bceao_credit_bail
+// ============================================================
+$concessions_exist = [];
+try {
+    $stmt = $pdo->prepare("SELECT * FROM z_bceao_credit_bail WHERE exercice = :exo ORDER BY code");
+    $stmt->execute([':exo' => $exercice]);
+    $concessions_exist = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    // ignore
+}
+
+$data_by_code = [];
+foreach ($concessions_exist as $row) {
+    $data_by_code[$row['code']] = $row;
+}
+
+// ============================================================
+// DÉFINITION DES LIGNES ET CONSTRUCTION DU TABLEAU
+// ============================================================
+$codes = ['ZA1', 'ZA2', 'ZA3', 'ZA4', 'ZA5', 'ZA6', 'ZA7'];
+$libelles = [
+    'ZA1' => 'CRÉDIT-BAIL (total des ZA2 à ZA5)',
+    'ZA2' => 'Crédit-bail Mobilier',
+    'ZA3' => 'Crédit-bail Immobilier',
+    'ZA4' => 'Crédit-bail sur actifs incorporels',
+    'ZA5' => 'Location avec option d\'achat',
+    'ZA6' => 'LOCATION-VENTE',
+    'ZA7' => 'CRÉANCES EN SOUFFRANCE SUR OPÉRATIONS DE CRÉDIT-BAIL ET ASSIMILÉES'
+];
+
+$table_data = [];
+foreach ($codes as $code) {
+    $is_parent = in_array($code, ['ZA1', 'ZA6', 'ZA7']);
+    if ($code == 'ZA1') {
+        $brut = $total_brut_auto;
+        $amort = $total_amort_auto;
+        $net = $total_net_auto;
+        $duree = '';
+    } elseif (in_array($code, ['ZA2','ZA3','ZA4','ZA5'])) {
+        $brut = $data_from_immobilisations[$code]['brut'] ?? 0;
+        $amort = $data_from_immobilisations[$code]['amort'] ?? 0;
+        $net = $data_from_immobilisations[$code]['net'] ?? 0;
+        $duree = '';
+    } else {
+        $brut = isset($data_by_code[$code]) ? (float)$data_by_code[$code]['montant_brut'] : 0;
+        $amort = isset($data_by_code[$code]) ? (float)$data_by_code[$code]['amortissements_provisions'] : 0;
+        $net = isset($data_by_code[$code]) ? (float)$data_by_code[$code]['montant_net'] : 0;
+        $duree = isset($data_by_code[$code]) ? $data_by_code[$code]['duree'] : '';
+    }
+    $table_data[$code] = [
+        'code' => $code,
+        'libelle' => $libelles[$code],
+        'duree' => $duree,
+        'montant_brut' => $brut,
+        'amortissements' => $amort,
+        'montant_net' => $net,
+        'is_parent' => $is_parent
     ];
 }
 
-// Récupération depuis immobilisations
-$map_types = ['ZA2' => 'MOBILIER', 'ZA3' => 'IMMOBILIER', 'ZA4' => 'INCORPOREL', 'ZA5' => 'LOA'];
-try {
-    $tbl_check = $pdo->query("SHOW TABLES LIKE 'immobilisations'");
-    if ($tbl_check->rowCount() > 0 && $pdo->query("SHOW COLUMNS FROM immobilisations LIKE 'type_credit_bail'")->rowCount() > 0) {
-        foreach ($map_types as $code => $type_val) {
-            $stmt = $pdo->prepare("SELECT COALESCE(SUM(montant_achat),0) as brut, COALESCE(SUM(amortissement_total),0) as amort FROM immobilisations WHERE type_credit_bail = :type AND statut = 'actif' AND date_achat <= :date_fin");
-            $stmt->execute([':type' => $type_val, ':date_fin' => $date_fin_periode]);
-            $row = $stmt->fetch();
-            $data[$code]['montant_brut'] = (float)$row['brut'];
-            $data[$code]['amortissements'] = (float)$row['amort'];
-            $data[$code]['montant_net'] = $data[$code]['montant_brut'] - $data[$code]['amortissements'];
-        }
-    }
-} catch (PDOException $e) {}
-
-// Récupération depuis credit_bail_contrats (ZA6)
-try {
-    $tbl_cb = $pdo->query("SHOW TABLES LIKE 'credit_bail_contrats'");
-    if ($tbl_cb->rowCount() > 0) {
-        $stmt_lv = $pdo->prepare("SELECT COALESCE(SUM(montant_brut),0) as brut, COALESCE(SUM(valeur_nette),0) as net FROM credit_bail_contrats WHERE type = 'VENTE' AND statut = 'actif' AND exercice = :exo");
-        $stmt_lv->execute([':exo' => $exercice]);
-        $row_lv = $stmt_lv->fetch();
-        $data['ZA6']['montant_brut'] = (float)$row_lv['brut'];
-        $data['ZA6']['montant_net'] = (float)$row_lv['net'];
-    }
-} catch (PDOException $e) {}
-
-// Calcul des totaux
-$data['ZA1']['montant_brut'] = $data['ZA2']['montant_brut'] + $data['ZA3']['montant_brut'] + $data['ZA4']['montant_brut'] + $data['ZA5']['montant_brut'];
-$data['ZA1']['amortissements'] = $data['ZA2']['amortissements'] + $data['ZA3']['amortissements'] + $data['ZA4']['amortissements'] + $data['ZA5']['amortissements'];
-$data['ZA1']['montant_net'] = $data['ZA2']['montant_net'] + $data['ZA3']['montant_net'] + $data['ZA4']['montant_net'] + $data['ZA5']['montant_net'];
-$total_general_brut = $data['ZA1']['montant_brut'] + $data['ZA6']['montant_brut'] + $data['ZA7']['montant_brut'];
-$total_general_amor = $data['ZA1']['amortissements'] + $data['ZA6']['amortissements'] + $data['ZA7']['amortissements'];
-$total_general_net = $data['ZA1']['montant_net'] + $data['ZA6']['montant_net'] + $data['ZA7']['montant_net'];
-
-// Détail des contrats
-$details_contrats = [];
-try {
-    if ($pdo->query("SHOW TABLES LIKE 'credit_bail_contrats'")->rowCount() > 0) {
-        $stmt_d = $pdo->prepare("SELECT * FROM credit_bail_contrats WHERE exercice = :exo ORDER BY date_debut DESC");
-        $stmt_d->execute([':exo' => $exercice]);
-        $details_contrats = $stmt_d->fetchAll();
-    }
-} catch (PDOException $e) {}
+// Totaux généraux
+$total_brut = $table_data['ZA1']['montant_brut'] + $table_data['ZA6']['montant_brut'] + $table_data['ZA7']['montant_brut'];
+$total_amort = $table_data['ZA1']['amortissements'] + $table_data['ZA6']['amortissements'] + $table_data['ZA7']['amortissements'];
+$total_net = $table_data['ZA1']['montant_net'] + $table_data['ZA6']['montant_net'] + $table_data['ZA7']['montant_net'];
 
 // ============================================================
-// GÉNÉRATION PDF (si format=pdf) – support POST
+// GÉNÉRATION PDF
 // ============================================================
 $format = isset($_POST['format']) ? $_POST['format'] : (isset($_GET['format']) ? $_GET['format'] : 'html');
 
@@ -272,46 +328,55 @@ if ($format === 'pdf') {
     $pdf->AddPage();
 
     $cols = [
-        ['label' => 'CODE',         'w' => 20],
-        ['label' => 'LIBELLÉS',     'w' => 110],
-        ['label' => 'Durée (mois)', 'w' => 25, 'align' => 'R'],
-        ['label' => 'Brut (FCFA)',  'w' => 45, 'align' => 'R'],
-        ['label' => 'Amort. (FCFA)','w' => 45, 'align' => 'R'],
-        ['label' => 'Net (FCFA)',   'w' => 45, 'align' => 'R'],
+        ['label' => 'CODE', 'w' => 20],
+        ['label' => 'LIBELLÉS', 'w' => 110],
+        ['label' => 'Durée', 'w' => 25, 'align' => 'R'],
+        ['label' => 'Montants Bruts', 'w' => 45, 'align' => 'R'],
+        ['label' => 'Amortissements/Provisions', 'w' => 45, 'align' => 'R'],
+        ['label' => 'Montants nets', 'w' => 45, 'align' => 'R'],
     ];
     $pdf->SectionTitle('Crédit-bail et opérations assimilées');
     $pdf->TableHeader($cols);
-    foreach ($data as $item) {
+
+    foreach ($codes as $code) {
+        $item = $table_data[$code];
         if ($item['is_parent']) {
             $pdf->TableRow($cols, [
                 $item['code'],
                 $item['libelle'],
-                '-',
-                $item['montant_brut'] > 0 ? PDF_DIMF::montant($item['montant_brut']) : '-',
-                $item['amortissements'] > 0 ? PDF_DIMF::montant($item['amortissements']) : '-',
-                $item['montant_net'] > 0 ? PDF_DIMF::montant($item['montant_net']) : '-'
+                $item['duree'],
+                PDF_DIMF::montant($item['montant_brut']),
+                PDF_DIMF::montant($item['amortissements']),
+                PDF_DIMF::montant($item['montant_net'])
             ], 'subtotal');
         } else {
             $pdf->TableRow($cols, [
                 $item['code'],
                 $item['libelle'],
-                $item['duree'] ?: '-',
+                $item['duree'],
                 PDF_DIMF::montant($item['montant_brut']),
                 PDF_DIMF::montant($item['amortissements']),
                 PDF_DIMF::montant($item['montant_net'])
             ]);
         }
     }
+
     $pdf->TableRow($cols, [
-        'TOTAL', 'TOTAL GÉNÉRAL', '',
-        PDF_DIMF::montant($total_general_brut),
-        PDF_DIMF::montant($total_general_amor),
-        PDF_DIMF::montant($total_general_net)
+        '',
+        'TOTAL',
+        '',
+        PDF_DIMF::montant($total_brut),
+        PDF_DIMF::montant($total_amort),
+        PDF_DIMF::montant($total_net)
     ], 'total');
 
     $pdf->Output('I', 'DIMF_2006_CreditBail_' . $exercice . '_' . $type_periode . '.pdf');
     exit;
 }
+
+// ============================================================
+// AFFICHAGE HTML
+// ============================================================
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -345,7 +410,6 @@ if ($format === 'pdf') {
         th { text-align:left; padding:12px 16px; background:#f8fafc; border-bottom:1px solid #e2e8f0; }
         td { padding:10px 16px; border-bottom:1px solid #f1f5f9; }
         .text-right { text-align:right; font-family:monospace; font-weight:500; }
-        .subtotal-row { background:#f8fafc; font-weight:600; }
         .total-row { background:#f0fdf4; font-weight:700; border-top:2px solid #bbf7d0; }
         .parent-row { background:#f8fafc; font-weight:600; }
         .child-indent { padding-left:30px; }
@@ -355,6 +419,7 @@ if ($format === 'pdf') {
         .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px 20px; border-radius:16px; display:flex; align-items:center; gap:14px; }
         .page-footer { text-align:center; font-size:0.75rem; color:#6b7280; margin-top:16px; }
         @media print { .btn-group, .page-footer, #filtersCard { display:none; } }
+        .form-saisie input[type="number"] { width:120px; }
     </style>
 </head>
 <body>
@@ -414,30 +479,95 @@ if ($format === 'pdf') {
         </div>
     </form>
 
-    <?= $message_ajout ?>
+    <?= $message ?>
 
+    <!-- ===== FORMULAIRE DE SAISIE ===== -->
     <div class="card">
-        <div class="card-header"><i class="fas fa-building"></i> CRÉDIT-BAIL ET OPÉRATIONS ASSIMILÉES</div>
+        <div class="card-header"><i class="fas fa-pen"></i> Saisie des montants pour DIMF_2006</div>
+        <form method="post">
+            <input type="hidden" name="action" value="save_credit_bail">
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>CODE</th>
+                            <th>LIBELLÉS</th>
+                            <th>Durée</th>
+                            <th class="text-right">Montants Bruts</th>
+                            <th class="text-right">Amortissements/Provisions</th>
+                            <th class="text-right">Montants nets</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($codes as $code): ?>
+                            <?php
+                                if ($code == 'ZA1') continue; // ZA1 est calculé automatiquement
+                                $item = $table_data[$code];
+                                $is_auto = in_array($code, ['ZA2','ZA3','ZA4','ZA5']);
+                                $readonly = $is_auto ? 'readonly' : '';
+                                $style = ($code == 'ZA1') ? 'parent-row' : '';
+                            ?>
+                            <tr class="<?= $style ?>">
+                                <td><strong><?= $code ?></strong></td>
+                                <td class="child-indent"><?= htmlspecialchars($item['libelle']) ?></td>
+                                <td>
+                                    <input type="text" name="duree[]" value="<?= htmlspecialchars($item['duree']) ?>" class="form-control form-control-sm" placeholder="Durée" style="width:80px;">
+                                </td>
+                                <td>
+                                    <input type="number" name="montant_brut[]" value="<?= $item['montant_brut'] ?>" step="0.01" class="form-control form-control-sm text-right" <?= $readonly ?> style="width:130px;">
+                                </td>
+                                <td>
+                                    <input type="number" name="amortissements[]" value="<?= $item['amortissements'] ?>" step="0.01" class="form-control form-control-sm text-right" <?= $readonly ?> style="width:130px;">
+                                </td>
+                                <td>
+                                    <input type="number" name="montant_net[]" value="<?= $item['montant_net'] ?>" step="0.01" class="form-control form-control-sm text-right" <?= $readonly ?> style="width:130px;">
+                                </td>
+                            </tr>
+                            <input type="hidden" name="code[]" value="<?= $code ?>">
+                            <input type="hidden" name="libelle[]" value="<?= htmlspecialchars($item['libelle']) ?>">
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <div class="mt-3">
+                <button type="submit" class="btn-save" style="background:#10b981; color:white; border:none; border-radius:40px; padding:8px 24px; cursor:pointer;"><i class="fas fa-save"></i> Enregistrer</button>
+                <span class="text-muted ms-3">(les champs en lecture seule sont calculés automatiquement)</span>
+            </div>
+        </form>
+    </div>
+
+    <!-- ===== TABLEAU RÉCAPITULATIF ===== -->
+    <div class="card">
+        <div class="card-header"><i class="fas fa-list-ul"></i> ÉTAT DES BIENS DONNÉS EN CRÉDIT-BAIL</div>
         <div class="table-wrapper">
             <table>
                 <thead>
-                    <tr><th>CODE</th><th>LIBELLÉS</th><th class="text-right">Durée (mois)</th><th class="text-right">Brut (FCFA)</th><th class="text-right">Amort. (FCFA)</th><th class="text-right">Net (FCFA)</th></table>
+                    <tr>
+                        <th>CODE</th>
+                        <th>LIBELLÉS</th>
+                        <th class="text-right">Durée</th>
+                        <th class="text-right">Montants Bruts</th>
+                        <th class="text-right">Amortissements/Provisions</th>
+                        <th class="text-right">Montants nets</th>
+                    </tr>
                 </thead>
                 <tbody>
-                    <?php foreach ($data as $item): ?>
+                    <?php foreach ($codes as $code): ?>
+                        <?php $item = $table_data[$code]; ?>
                         <?php if ($item['is_parent']): ?>
-                            <tr class="parent-row"><td><strong><?= htmlspecialchars($item['code']) ?></strong></td>
-                            <td><strong><?= htmlspecialchars($item['libelle']) ?></strong></td>
-                            <td class="text-right">-</td>
-                            <td class="text-right"><?= $item['montant_brut']>0?number_format($item['montant_brut'],0,',',' '):'-' ?> </td>
-                            <td class="text-right"><?= $item['amortissements']>0?number_format($item['amortissements'],0,',',' '):'-' ?> </td>
-                            <td class="text-right"><?= $item['montant_net']>0?number_format($item['montant_net'],0,',',' '):'-' ?> </td>
+                            <tr class="parent-row">
+                                <td><strong><?= htmlspecialchars($item['code']) ?></strong></td>
+                                <td><strong><?= htmlspecialchars($item['libelle']) ?></strong></td>
+                                <td class="text-right"><?= $item['duree'] ?: '-' ?></td>
+                                <td class="text-right"><?= $item['montant_brut']>0 ? number_format($item['montant_brut'],0,',',' ') : '-' ?></td>
+                                <td class="text-right"><?= $item['amortissements']>0 ? number_format($item['amortissements'],0,',',' ') : '-' ?></td>
+                                <td class="text-right"><?= $item['montant_net']>0 ? number_format($item['montant_net'],0,',',' ') : '-' ?></td>
                             </tr>
                         <?php else: ?>
                             <tr>
                                 <td><?= htmlspecialchars($item['code']) ?></td>
                                 <td class="child-indent"><?= htmlspecialchars($item['libelle']) ?></td>
-                                <td class="text-right"><?= $item['duree']?:'-' ?></td>
+                                <td class="text-right"><?= $item['duree'] ?: '-' ?></td>
                                 <td class="text-right"><?= number_format($item['montant_brut'],0,',',' ') ?></td>
                                 <td class="text-right"><?= number_format($item['amortissements'],0,',',' ') ?></td>
                                 <td class="text-right"><?= number_format($item['montant_net'],0,',',' ') ?></td>
@@ -445,86 +575,19 @@ if ($format === 'pdf') {
                         <?php endif; ?>
                     <?php endforeach; ?>
                     <tr class="total-row">
-                        <td colspan="3"><strong>TOTAL GÉNÉRAL</strong></td>
-                        <td class="text-right"><strong><?= number_format($total_general_brut,0,',',' ') ?></strong></td>
-                        <td class="text-right"><strong><?= number_format($total_general_amor,0,',',' ') ?></strong></td>
-                        <td class="text-right"><strong><?= number_format($total_general_net,0,',',' ') ?></strong></td>
+                        <td colspan="2"><strong>TOTAL</strong></td>
+                        <td class="text-right">-</td>
+                        <td class="text-right"><strong><?= number_format($total_brut,0,',',' ') ?></strong></td>
+                        <td class="text-right"><strong><?= number_format($total_amort,0,',',' ') ?></strong></td>
+                        <td class="text-right"><strong><?= number_format($total_net,0,',',' ') ?></strong></td>
                     </tr>
                 </tbody>
             </table>
         </div>
     </div>
 
-    <div class="card">
-        <div class="card-header"><i class="fas fa-file-contract"></i> DÉTAIL DES CONTRATS - Exercice <?= $exercice ?></div>
-        <?php if(empty($details_contrats)): ?>
-            <div class="info-box">Aucun contrat enregistré.</div>
-        <?php else: ?>
-            <div class="table-wrapper">
-                <table>
-                    <thead>
-                        <tr><th>N° Contrat</th><th>Type</th><th class="text-right">Durée</th><th>Date début</th><th>Date fin</th><th class="text-right">Montant brut</th><th class="text-right">Valeur nette</th><th>Statut</th></tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach($details_contrats as $c): ?>
-                            <tr>
-                                <td><?= htmlspecialchars($c['numero_contrat']) ?></td>
-                                <td><?= htmlspecialchars($c['type']) ?></td>
-                                <td class="text-right"><?= $c['duree'] ?> mois</td>
-                                <td><?= date('d/m/Y',strtotime($c['date_debut'])) ?></td>
-                                <td><?= $c['date_fin']?date('d/m/Y',strtotime($c['date_fin'])):'-' ?></td>
-                                <td class="text-right"><?= number_format($c['montant_brut'],0,',',' ') ?></td>
-                                <td class="text-right"><?= number_format($c['valeur_nette'],0,',',' ') ?></td>
-                                <td><?= $c['statut'] ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        <?php endif; ?>
-    </div>
-
-    <div class="card">
-        <div class="card-header"><i class="fas fa-plus-circle"></i> AJOUTER UN CONTRAT</div>
-        <form method="post">
-            <input type="hidden" name="exercice_form" value="<?= $exercice ?>">
-            <div class="filters-row" style="margin-bottom:0;">
-                <div class="filter-item">
-                    <label>Type *</label>
-                    <select name="type_contrat" required>
-                        <option value="">-- Sélectionner --</option>
-                        <option value="MOBILIER">Crédit-bail Mobilier</option>
-                        <option value="IMMOBILIER">Crédit-bail Immobilier</option>
-                        <option value="INCORPOREL">Crédit-bail sur actifs incorporels</option>
-                        <option value="LOA">Location avec option d'achat</option>
-                        <option value="VENTE">Location-vente</option>
-                    </select>
-                </div>
-                <div class="filter-item">
-                    <label>Durée (mois)</label>
-                    <input type="number" name="duree">
-                </div>
-                <div class="filter-item">
-                    <label>Montant brut *</label>
-                    <input type="number" name="montant_brut" required>
-                </div>
-                <div class="filter-item">
-                    <label>Date début *</label>
-                    <input type="date" name="date_debut" required>
-                </div>
-                <div class="filter-item">
-                    <label>Date fin</label>
-                    <input type="date" name="date_fin">
-                </div>
-                <div class="filter-item">
-                    <button type="submit" class="btn-apply">💾 Enregistrer</button>
-                </div>
-            </div>
-        </form>
-    </div>
-
     <div class="page-footer">
-        <i class="fas fa-calendar-alt"></i> Document généré le <?= date('d/m/Y à H:i:s') ?> – Période : <?= $exercice ?> (<?= ucfirst($type_periode) ?>) arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>
+        <i class="fas fa-calendar-alt"></i> Document généré le <?= date('d/m/Y à H:i:s') ?> – Période : <?= $exercice ?> (<?= ucfirst($type_periode) ?>) – Données issues des tables <code>immobilisations</code> et <code>z_bceao_credit_bail</code>
     </div>
 </div>
 
@@ -572,7 +635,7 @@ if ($format === 'pdf') {
         input.name = 'format';
         input.value = 'pdf';
         form.appendChild(input);
-        form.target = '_blank';
+        form.target = '_self';
         form.submit();
         form.target = '';
         form.removeChild(input);
@@ -580,11 +643,23 @@ if ($format === 'pdf') {
 
     function exporterExcel() {
         const wb = XLSX.utils.book_new();
-        const data = [['DIMF_2006 - CRÉDIT-BAIL'],['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],[],['CODE','LIBELLÉ','Durée','Brut','Amortissements','Net']];
-        <?php foreach($data as $item): ?>
-        data.push(['<?= $item['code'] ?>','<?= addslashes($item['libelle']) ?>','<?= $item['duree']?:'-' ?>',<?= $item['montant_brut'] ?>,<?= $item['amortissements'] ?>,<?= $item['montant_net'] ?>]);
+        const data = [
+            ['DIMF_2006 - CRÉDIT-BAIL'],
+            ['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],
+            [],
+            ['CODE','LIBELLÉS','Durée','Montants Bruts','Amortissements/Provisions','Montants nets']
+        ];
+        <?php foreach ($codes as $code): $item = $table_data[$code]; ?>
+            data.push([
+                '<?= addslashes($item['code']) ?>',
+                '<?= addslashes($item['libelle']) ?>',
+                '<?= addslashes($item['duree']) ?>',
+                <?= $item['montant_brut'] ?>,
+                <?= $item['amortissements'] ?>,
+                <?= $item['montant_net'] ?>
+            ]);
         <?php endforeach; ?>
-        data.push(['TOTAL','TOTAL GÉNÉRAL','',<?= $total_general_brut ?>,<?= $total_general_amor ?>,<?= $total_general_net ?>]);
+        data.push(['TOTAL','','',<?= $total_brut ?>,<?= $total_amort ?>,<?= $total_net ?>]);
         const ws = XLSX.utils.aoa_to_sheet(data);
         XLSX.utils.book_append_sheet(wb, ws, "CREDIT_BAIL");
         XLSX.writeFile(wb, 'DIMF_2006_<?= $exercice ?>_<?= $type_periode ?>.xlsx');

@@ -428,7 +428,7 @@ if ($format === 'pdf') {
             <div class="info-box">Aucun crédit en souffrance.</div>
         <?php else: ?>
             <div class="table-wrapper">
-                </table>
+                <table>
                     <thead>
                         <tr><th>N° Dossier</th><th>Date octroi</th><th class="text-right">Montant initial</th><th class="text-right">Encours actuel</th><th class="text-right">Impayé</th><th>Dernier impayé</th><th>Jours retard</th><th class="text-right">Provisions</th></tr>
                     </thead>
@@ -525,9 +525,8 @@ if ($format === 'pdf') {
         input.name = 'format';
         input.value = 'pdf';
         form.appendChild(input);
-        form.target = '_blank';
+        // On supprime la ligne form.target = '_blank' pour rester dans la même fenêtre
         form.submit();
-        form.target = '';
         form.removeChild(input);
     }
 

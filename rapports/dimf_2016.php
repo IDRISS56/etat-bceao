@@ -1,6 +1,6 @@
 <?php
 // DIMF_2016.php - État d'affectation du résultat
-// Design DIMF_2000 - gestion POST, Bootstrap, FPDF avec mb_convert_encoding
+// Utilise la table z_bceao_affectation_resultat (existe déjà)
 
 session_start();
 
@@ -9,6 +9,7 @@ session_start();
 // ============================================================
 require_once '../databases/database.php';
 require_once '../fpdf/fpdf.php';
+
 
 // ============================================================
 // PARAMÈTRES (POST > GET)
@@ -41,42 +42,58 @@ $message = '';
 $message_type = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] == 'save') {
     try {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS affectation_resultat (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            exercice INT NOT NULL,
-            type_affectation VARCHAR(50) NOT NULL,
-            montant DECIMAL(15,2) DEFAULT 0,
-            description TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_exercice_type (exercice, type_affectation)
-        )");
-
-        $stmtDel = $pdo->prepare("DELETE FROM affectation_resultat WHERE exercice = :exercice");
+        // Supprimer les anciennes données pour l'exercice
+        $stmtDel = $pdo->prepare("DELETE FROM z_bceao_affectation_resultat WHERE exercice = :exercice");
         $stmtDel->execute([':exercice' => $exercice]);
 
-        $stmtIns = $pdo->prepare("INSERT INTO affectation_resultat (exercice, type_affectation, montant, description) VALUES (:exercice, :type, :montant, :desc)");
+        $stmtIns = $pdo->prepare("
+            INSERT INTO z_bceao_affectation_resultat 
+            (exercice, code, libelle, proposition, repartition_effective, statut)
+            VALUES (:exercice, :code, :libelle, :proposition, :repartition_effective, 'actif')
+        ");
 
-        $resultat = (float)($_POST['resultat'] ?? 0);
-        $report_anterieur = (float)($_POST['report_anterieur'] ?? 0);
-        $stmtIns->execute([':exercice' => $exercice, ':type' => 'RESULTAT_A_AFFECTER', ':montant' => $resultat, ':desc' => 'Résultat de l\'exercice']);
-        $stmtIns->execute([':exercice' => $exercice, ':type' => 'REPORT_ANTERIEUR', ':montant' => $report_anterieur, ':desc' => 'Report à nouveau antérieur']);
+        // Définition des lignes avec leurs codes et libellés
+        $lignes = [
+            ['code' => 'DIMF_2016_1_1', 'libelle' => 'DÉTERMINATION DU RÉSULTAT À AFFECTER', 'type' => 'titre'],
+            ['code' => 'L80',           'libelle' => 'Résultat de l\'exercice (+/-)', 'type' => 'montant'],
+            ['code' => 'L70',           'libelle' => 'Report à nouveau (+/-)', 'type' => 'montant'],
+            ['code' => '770',           'libelle' => 'RÉSULTAT À AFFECTER', 'type' => 'resultat'],
+            ['code' => 'DIMF_2016_1_5', 'libelle' => 'AFFECTATION DU RÉSULTAT BÉNÉFICIAIRE', 'type' => 'titre'],
+            ['code' => '772',           'libelle' => 'Réserve générale', 'type' => 'montant'],
+            ['code' => '773',           'libelle' => 'Réserve facultatives', 'type' => 'montant'],
+            ['code' => '774',           'libelle' => 'Autres réserves', 'type' => 'montant'],
+            ['code' => '776',           'libelle' => 'Report à nouveau bénéficiaire', 'type' => 'montant'],
+            ['code' => '777',           'libelle' => 'Autres affectations', 'type' => 'montant'],
+            ['code' => 'DIMF_2016_1_11','libelle' => 'AFFECTATION DU RÉSULTAT DÉFICITAIRE', 'type' => 'titre'],
+            ['code' => '776b',          'libelle' => '*Report à nouveau déficitaire', 'type' => 'montant'],
+            ['code' => '778',           'libelle' => '*Prélèvements sur les réserves', 'type' => 'montant'],
+            ['code' => '779',           'libelle' => 'Autres', 'type' => 'montant'],
+        ];
 
-        $reserve_generale = (float)($_POST['reserve_generale'] ?? 0);
-        $reserve_facultative = (float)($_POST['reserve_facultative'] ?? 0);
-        $autres_reserves = (float)($_POST['autres_reserves'] ?? 0);
-        $report_nouveau = (float)($_POST['report_nouveau'] ?? 0);
-        $autres_affectations = (float)($_POST['autres_affectations'] ?? 0);
-        if ($reserve_generale > 0) $stmtIns->execute([':exercice' => $exercice, ':type' => 'RESERVE_GENERALE', ':montant' => $reserve_generale, ':desc' => 'Réserve générale']);
-        if ($reserve_facultative > 0) $stmtIns->execute([':exercice' => $exercice, ':type' => 'RESERVE_FACULTATIVE', ':montant' => $reserve_facultative, ':desc' => 'Réserve facultative']);
-        if ($autres_reserves > 0) $stmtIns->execute([':exercice' => $exercice, ':type' => 'AUTRES_RESERVES', ':montant' => $autres_reserves, ':desc' => 'Autres réserves']);
-        if ($report_nouveau > 0) $stmtIns->execute([':exercice' => $exercice, ':type' => 'REPORT_NOUVEAU', ':montant' => $report_nouveau, ':desc' => 'Report à nouveau bénéficiaire']);
-        if ($autres_affectations > 0) $stmtIns->execute([':exercice' => $exercice, ':type' => 'AUTRES_AFFECTATIONS', ':montant' => $autres_affectations, ':desc' => 'Autres affectations']);
-
-        $prelevement_reserves = (float)($_POST['prelevement_reserves'] ?? 0);
-        $report_deficitaire = (float)($_POST['report_deficitaire'] ?? 0);
-        if ($prelevement_reserves > 0) $stmtIns->execute([':exercice' => $exercice, ':type' => 'PRELEVEMENT_RESERVES', ':montant' => $prelevement_reserves, ':desc' => 'Prélèvement sur les réserves']);
-        if ($report_deficitaire > 0) $stmtIns->execute([':exercice' => $exercice, ':type' => 'REPORT_DEFICITAIRE', ':montant' => $report_deficitaire, ':desc' => 'Report à nouveau déficitaire']);
+        // Récupération des montants postés
+        foreach ($lignes as $l) {
+            $code = $l['code'];
+            $proposition = (float)($_POST['proposition_' . $code] ?? 0);
+            $repartition = (float)($_POST['repartition_' . $code] ?? 0);
+            // Si la ligne est un titre, on met 0
+            if ($l['type'] == 'titre' || $l['type'] == 'resultat') {
+                // On peut stocker 0 pour les titres
+                $proposition = 0;
+                $repartition = 0;
+            }
+            // Exception : 770 est le résultat à affecter, calculé automatiquement, on le stocke aussi
+            if ($code == '770') {
+                $proposition = (float)($_POST['resultat_a_affecter'] ?? 0);
+                $repartition = $proposition; // par défaut même valeur
+            }
+            $stmtIns->execute([
+                ':exercice' => $exercice,
+                ':code' => $code,
+                ':libelle' => $l['libelle'],
+                ':proposition' => $proposition,
+                ':repartition_effective' => $repartition
+            ]);
+        }
 
         $message = "Affectation du résultat enregistrée avec succès !";
         $message_type = "success";
@@ -127,47 +144,47 @@ try {
     $report_anterieur = (float)$stmt->fetch()['solde'];
 } catch (PDOException $e) { $report_anterieur = 0; }
 
+$resultat_a_affecter = $resultat_exercice + $report_anterieur;
+
+// Récupération des données existantes pour l'affichage
 $affectations_data = [];
 try {
-    $stmt = $pdo->prepare("SELECT * FROM affectation_resultat WHERE exercice = :exercice");
+    $stmt = $pdo->prepare("SELECT * FROM z_bceao_affectation_resultat WHERE exercice = :exercice AND statut = 'actif'");
     $stmt->execute([':exercice' => $exercice]);
-    foreach ($stmt->fetchAll() as $row) {
-        $affectations_data[$row['type_affectation']] = (float)$row['montant'];
+    $rows = $stmt->fetchAll();
+    foreach ($rows as $row) {
+        $affectations_data[$row['code']] = [
+            'proposition' => (float)$row['proposition'],
+            'repartition_effective' => (float)$row['repartition_effective']
+        ];
     }
 } catch (PDOException $e) { $affectations_data = []; }
 
-$reserve_generale_solde = 0;
-try {
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(e.montant_credit - e.montant_debit), 0) as solde
-        FROM ecritures_comptables e
-        INNER JOIN plan_comptables pc ON e.compte_general = pc.numero_compte
-        WHERE pc.numero_compte LIKE '106%'
-          AND e.date_ecriture <= :fin
-    ");
-    $stmt->execute([':fin' => $date_fin_periode]);
-    $reserve_generale_solde = (float)$stmt->fetch()['solde'];
-} catch (PDOException $e) { $reserve_generale_solde = 0; }
-
+// Valeurs par défaut pour le formulaire
 $default_values = [
     'resultat' => $resultat_exercice,
     'report_anterieur' => $report_anterieur,
-    'reserve_generale' => $affectations_data['RESERVE_GENERALE'] ?? 0,
-    'reserve_facultative' => $affectations_data['RESERVE_FACULTATIVE'] ?? 0,
-    'autres_reserves' => $affectations_data['AUTRES_RESERVES'] ?? 0,
-    'report_nouveau' => $affectations_data['REPORT_NOUVEAU'] ?? 0,
-    'autres_affectations' => $affectations_data['AUTRES_AFFECTATIONS'] ?? 0,
-    'prelevement_reserves' => $affectations_data['PRELEVEMENT_RESERVES'] ?? 0,
-    'report_deficitaire' => $affectations_data['REPORT_DEFICITAIRE'] ?? 0
+    'reserve_generale' => $affectations_data['772']['proposition'] ?? 0,
+    'reserve_facultative' => $affectations_data['773']['proposition'] ?? 0,
+    'autres_reserves' => $affectations_data['774']['proposition'] ?? 0,
+    'report_nouveau' => $affectations_data['776']['proposition'] ?? 0,
+    'autres_affectations' => $affectations_data['777']['proposition'] ?? 0,
+    'report_deficitaire' => $affectations_data['776b']['proposition'] ?? 0,
+    'prelevement_reserves' => $affectations_data['778']['proposition'] ?? 0,
+    'autres' => $affectations_data['779']['proposition'] ?? 0
 ];
 
-$resultat_a_affecter = $default_values['resultat'] + $default_values['report_anterieur'];
-$total_affectations = $default_values['reserve_generale'] + $default_values['reserve_facultative'] 
-                    + $default_values['autres_reserves'] + $default_values['report_nouveau'] 
-                    + $default_values['autres_affectations'];
-$total_deficit = $default_values['prelevement_reserves'] + $default_values['report_deficitaire'];
-$difference = $resultat_a_affecter - ($resultat_a_affecter >= 0 ? $total_affectations : $total_deficit);
-$equilibre_ok = (abs($difference) < 1);
+// Calcul des totaux
+$total_proposition = 0;
+foreach (['reserve_generale','reserve_facultative','autres_reserves','report_nouveau','autres_affectations','report_deficitaire','prelevement_reserves','autres'] as $key) {
+    $total_proposition += $default_values[$key];
+}
+$total_repartition_effective = $total_proposition; // par défaut, on met la même chose
+
+// Vérification équilibre (pour l'affichage de l'état)
+$equilibre_ok = (abs($resultat_a_affecter - $total_proposition) < 1);
+
+// Réserve générale minimale
 $min_reserve_requis = ($resultat_a_affecter > 0) ? $resultat_a_affecter * 0.15 : 0;
 
 function format_montant($val) {
@@ -175,21 +192,18 @@ function format_montant($val) {
 }
 
 // ============================================================
-// CLASSE PDF (mb_convert_encoding)
+// CLASSE PDF
 // ============================================================
 if ($format === 'pdf') {
-
     class PDF_DIMF extends FPDF {
         public $codeDimf = 'DIMF_2016';
         public $titreDimf = "Etat d'affectation du résultat";
         public $nomSfd = 'SFD';
         public $periode = '';
         public $exercice = '';
-
         static function u($str) {
             return mb_convert_encoding($str, 'ISO-8859-1', 'UTF-8');
         }
-
         function Header() {
             $this->SetFillColor(156, 163, 175);
             $this->Rect(0, 0, $this->GetPageWidth(), 28, 'F');
@@ -206,14 +220,12 @@ if ($format === 'pdf') {
             $this->SetTextColor(0, 0, 0);
             $this->Ln(4);
         }
-
         function Footer() {
             $this->SetY(-12);
             $this->SetFont('Arial', 'I', 7);
             $this->SetTextColor(100, 116, 139);
             $this->Cell(0, 4, self::u('SICS-BCEAO  •  Généré le ' . date('d/m/Y H:i:s') . '  •  Page ' . $this->PageNo() . '/{nb}'), 0, 0, 'C');
         }
-
         function SectionTitle($label) {
             $this->SetFont('Arial', 'B', 9);
             $this->SetFillColor(0, 0, 0);
@@ -222,21 +234,38 @@ if ($format === 'pdf') {
             $this->SetTextColor(0, 0, 0);
             $this->Ln(1);
         }
-
-        function TableRow2Cols($label, $value, $style = '') {
-            if ($style == 'total') {
+        function TableHeader() {
+            $this->SetFont('Arial', 'B', 8);
+            $this->SetFillColor(248, 250, 252);
+            $this->SetTextColor(30, 41, 59);
+            $this->SetDrawColor(226, 232, 240);
+            $this->Cell(30, 6, self::u('CODE'), 1, 0, 'L', true);
+            $this->Cell(70, 6, self::u('LIBELLÉS'), 1, 0, 'L', true);
+            $this->Cell(45, 6, self::u('Proposition de répartition'), 1, 0, 'R', true);
+            $this->Cell(45, 6, self::u('Répartition effective'), 1, 1, 'R', true);
+        }
+        function TableRow($code, $libelle, $proposition, $repartition, $style = '') {
+            $fill = false;
+            if ($style == 'subtotal') {
+                $this->SetFillColor(248, 250, 252);
+                $this->SetFont('Arial', 'B', 8);
+                $fill = true;
+            } elseif ($style == 'total') {
                 $this->SetFillColor(240, 253, 244);
-                $this->SetFont('Arial', 'B', 9);
+                $this->SetFont('Arial', 'B', 8.5);
                 $fill = true;
             } else {
                 $this->SetFillColor(255, 255, 255);
-                $this->SetFont('Arial', '', 8);
+                $this->SetFont('Arial', '', 7.5);
                 $fill = false;
             }
-            $this->Cell(100, 7, self::u($label), 1, 0, 'L', $fill);
-            $this->Cell(0, 7, self::u($value), 1, 1, 'R', $fill);
+            $this->SetTextColor(15, 23, 42);
+            $this->SetDrawColor(226, 232, 240);
+            $this->Cell(30, 6, self::u($code), 1, 0, 'L', $fill);
+            $this->Cell(70, 6, self::u($libelle), 1, 0, 'L', $fill);
+            $this->Cell(45, 6, self::u($proposition), 1, 0, 'R', $fill);
+            $this->Cell(45, 6, self::u($repartition), 1, 1, 'R', $fill);
         }
-
         static function montant($val) {
             return number_format((float)$val, 0, ',', ' ') . ' F';
         }
@@ -253,43 +282,42 @@ if ($format === 'pdf') {
     $pdf->SetAutoPageBreak(true, 14);
     $pdf->AddPage();
 
-    $pdf->SectionTitle('DÉTERMINATION DU RÉSULTAT À AFFECTER');
-    $pdf->TableRow2Cols('L80 - Résultat de l\'exercice (bénéfice ou déficit)', PDF_DIMF::montant($default_values['resultat']));
-    $pdf->TableRow2Cols('L70 - Report à nouveau antérieur (bénéfice ou déficit)', PDF_DIMF::montant($default_values['report_anterieur']));
-    $pdf->TableRow2Cols('RÉSULTAT À AFFECTER (L80 + L70)', PDF_DIMF::montant($resultat_a_affecter), 'total');
-    $pdf->Ln(5);
+    $pdf->SetFont('Arial', 'B', 11);
+    $pdf->Cell(0, 8, PDF_DIMF::u('ÉTATS D\'AFFECTATION DU RÉSULTAT'), 0, 1, 'C');
+    $pdf->Ln(2);
 
-    if ($resultat_a_affecter >= 0) {
-        $pdf->SectionTitle('AFFECTATION DU RÉSULTAT BÉNÉFICIAIRE');
-        $pdf->TableRow2Cols('772 - Réserve générale (minimum 15% du bénéfice)', PDF_DIMF::montant($default_values['reserve_generale']));
-        $pdf->TableRow2Cols('773 - Réserve facultative', PDF_DIMF::montant($default_values['reserve_facultative']));
-        $pdf->TableRow2Cols('774 - Autres réserves', PDF_DIMF::montant($default_values['autres_reserves']));
-        $pdf->TableRow2Cols('776 - Report à nouveau bénéficiaire', PDF_DIMF::montant($default_values['report_nouveau']));
-        $pdf->TableRow2Cols('777 - Autres affectations', PDF_DIMF::montant($default_values['autres_affectations']));
-        $pdf->TableRow2Cols('TOTAL AFFECTATIONS', PDF_DIMF::montant($total_affectations), 'total');
-        if ($default_values['reserve_generale'] < $min_reserve_requis) {
-            $pdf->Ln(3);
-            $pdf->SetFont('Arial', 'I', 8);
-            $pdf->SetTextColor(220, 38, 38);
-            $pdf->Cell(0, 5, PDF_DIMF::u("Attention : La dotation à la réserve générale (" . PDF_DIMF::montant($default_values['reserve_generale']) . ") est inférieure au minimum requis de " . PDF_DIMF::montant($min_reserve_requis) . " (15%)."), 0, 1);
+    $pdf->TableHeader();
+
+    // Lignes (codes et libellés fixes)
+    $lignes_pdf = [
+        ['code' => 'DIMF_2016_1_1', 'libelle' => 'DÉTERMINATION DU RÉSULTAT À AFFECTER', 'type' => 'subtotal'],
+        ['code' => 'L80', 'libelle' => 'Résultat de l\'exercice (+/-)', 'val' => $resultat_exercice],
+        ['code' => 'L70', 'libelle' => 'Report à nouveau (+/-)', 'val' => $report_anterieur],
+        ['code' => '770', 'libelle' => 'RÉSULTAT À AFFECTER', 'val' => $resultat_a_affecter, 'type' => 'total'],
+        ['code' => 'DIMF_2016_1_5', 'libelle' => 'AFFECTATION DU RÉSULTAT BÉNÉFICIAIRE', 'type' => 'subtotal'],
+        ['code' => '772', 'libelle' => 'Réserve générale', 'val' => $default_values['reserve_generale']],
+        ['code' => '773', 'libelle' => 'Réserve facultatives', 'val' => $default_values['reserve_facultative']],
+        ['code' => '774', 'libelle' => 'Autres réserves', 'val' => $default_values['autres_reserves']],
+        ['code' => '776', 'libelle' => 'Report à nouveau bénéficiaire', 'val' => $default_values['report_nouveau']],
+        ['code' => '777', 'libelle' => 'Autres affectations', 'val' => $default_values['autres_affectations']],
+        ['code' => 'DIMF_2016_1_11', 'libelle' => 'AFFECTATION DU RÉSULTAT DÉFICITAIRE', 'type' => 'subtotal'],
+        ['code' => '776b', 'libelle' => '*Report à nouveau déficitaire', 'val' => $default_values['report_deficitaire']],
+        ['code' => '778', 'libelle' => '*Prélèvements sur les réserves', 'val' => $default_values['prelevement_reserves']],
+        ['code' => '779', 'libelle' => 'Autres', 'val' => $default_values['autres']],
+    ];
+
+    foreach ($lignes_pdf as $l) {
+        $style = '';
+        if (isset($l['type']) && $l['type'] == 'subtotal') $style = 'subtotal';
+        if (isset($l['type']) && $l['type'] == 'total') $style = 'total';
+        $proposition = isset($l['val']) ? PDF_DIMF::montant($l['val']) : '-';
+        $repartition = isset($l['val']) ? PDF_DIMF::montant($l['val']) : '-'; // par défaut, on met pareil
+        // Pour les titres, on met des tirets
+        if (isset($l['type']) && ($l['type'] == 'subtotal' || $l['type'] == 'total')) {
+            $proposition = '';
+            $repartition = '';
         }
-    } else {
-        $pdf->SectionTitle('AFFECTATION DU RÉSULTAT DÉFICITAIRE');
-        $pdf->TableRow2Cols('776 - Report à nouveau déficitaire', PDF_DIMF::montant($default_values['report_deficitaire']));
-        $pdf->TableRow2Cols('778 - Prélèvement sur les réserves', PDF_DIMF::montant($default_values['prelevement_reserves']));
-        $pdf->TableRow2Cols('TOTAL AFFECTATIONS', PDF_DIMF::montant($total_deficit), 'total');
-    }
-
-    $pdf->Ln(5);
-    $pdf->SectionTitle('VÉRIFICATION DE L\'ÉQUILIBRE');
-    if ($equilibre_ok) {
-        $pdf->SetFont('Arial', 'B', 9);
-        $pdf->SetTextColor(22, 163, 74);
-        $pdf->Cell(0, 7, PDF_DIMF::u('✓ ÉQUILIBRE - Le résultat à affecter correspond au total des affectations.'), 0, 1);
-    } else {
-        $pdf->SetFont('Arial', 'B', 9);
-        $pdf->SetTextColor(220, 38, 38);
-        $pdf->Cell(0, 7, PDF_DIMF::u('✗ DÉSÉQUILIBRE - Écart de ' . PDF_DIMF::montant(abs($difference)) . ' FCFA.'), 0, 1);
+        $pdf->TableRow($l['code'], $l['libelle'], $proposition, $repartition, $style);
     }
 
     $pdf->Output('I', 'DIMF_2016_' . $exercice . '_' . $type_periode . '.pdf');
@@ -297,7 +325,7 @@ if ($format === 'pdf') {
 }
 
 // ============================================================
-// EXPORT EXCEL (POST)
+// EXPORT EXCEL
 // ============================================================
 if ($format === 'excel') {
     header('Content-Type: application/vnd.ms-excel');
@@ -306,37 +334,45 @@ if ($format === 'excel') {
     echo '<h2>DIMF_2016 - État d\'affectation du résultat</h2>';
     echo '<p>Période : ' . htmlspecialchars($lib_periode) . '</p>';
     echo '<table border="1"><thead>';
-    echo '<tr><th>Poste</th><th>Montant (FCFA)</th></tr>';
+    echo '<tr><th>CODE</th><th>LIBELLÉS</th><th>Proposition de répartition</th><th>Répartition effective</th></tr>';
     echo '</thead><tbody>';
-    echo '<tr><td>L80 - Résultat de l\'exercice</td><td>' . number_format($default_values['resultat'],0,',',' ') . '</td></tr>';
-    echo '<tr><td>L70 - Report à nouveau antérieur</td><td>' . number_format($default_values['report_anterieur'],0,',',' ') . '</td></tr>';
-    echo '<tr style="background:#e8f5e9;"><td><strong>RÉSULTAT À AFFECTER</strong></td><td><strong>' . number_format($resultat_a_affecter,0,',',' ') . '</strong></td></tr>';
-    echo '<tr><td colspan="2">&nbsp;</td></tr>';
-    if ($resultat_a_affecter >= 0) {
-        echo '<tr><th colspan="2">AFFECTATION DU RÉSULTAT BÉNÉFICIAIRE</th></tr>';
-        echo '<tr><td>772 - Réserve générale</td><td>' . number_format($default_values['reserve_generale'],0,',',' ') . '</td></tr>';
-        echo '<tr><td>773 - Réserve facultative</td><td>' . number_format($default_values['reserve_facultative'],0,',',' ') . '</td></tr>';
-        echo '<tr><td>774 - Autres réserves</td><td>' . number_format($default_values['autres_reserves'],0,',',' ') . '</td></tr>';
-        echo '<tr><td>776 - Report à nouveau bénéficiaire</td><td>' . number_format($default_values['report_nouveau'],0,',',' ') . '</td></tr>';
-        echo '<tr><td>777 - Autres affectations</td><td>' . number_format($default_values['autres_affectations'],0,',',' ') . '</td></tr>';
-        echo '<tr style="background:#e8f5e9;"><td><strong>TOTAL AFFECTATIONS</strong></td><td><strong>' . number_format($total_affectations,0,',',' ') . '</strong></td></tr>';
-    } else {
-        echo '<tr><th colspan="2">AFFECTATION DU RÉSULTAT DÉFICITAIRE</th></tr>';
-        echo '<tr><td>776 - Report à nouveau déficitaire</td><td>' . number_format($default_values['report_deficitaire'],0,',',' ') . '</td></tr>';
-        echo '<tr><td>778 - Prélèvement sur les réserves</td><td>' . number_format($default_values['prelevement_reserves'],0,',',' ') . '</td></tr>';
-        echo '<tr style="background:#e8f5e9;"><td><strong>TOTAL AFFECTATIONS</strong></td><td><strong>' . number_format($total_deficit,0,',',' ') . '</strong></td></tr>';
-    }
-    echo '<tr><td colspan="2">&nbsp;</td></tr>';
-    echo '<tr><th colspan="2">VÉRIFICATION DE L\'ÉQUILIBRE</th></tr>';
-    if ($equilibre_ok) {
-        echo '<tr><td colspan="2" style="color:#2e7d32;">✓ ÉQUILIBRE - Le résultat à affecter correspond au total des affectations.</td></tr>';
-    } else {
-        echo '<tr><td colspan="2" style="color:#c62828;">✗ DÉSÉQUILIBRE - Écart de ' . number_format(abs($difference),0,',',' ') . ' FCFA.</td></tr>';
+    // Mêmes lignes que pour le PDF
+    $lignes_excel = [
+        ['code' => 'DIMF_2016_1_1', 'libelle' => 'DÉTERMINATION DU RÉSULTAT À AFFECTER', 'val' => null, 'type' => 'titre'],
+        ['code' => 'L80', 'libelle' => 'Résultat de l\'exercice (+/-)', 'val' => $resultat_exercice],
+        ['code' => 'L70', 'libelle' => 'Report à nouveau (+/-)', 'val' => $report_anterieur],
+        ['code' => '770', 'libelle' => 'RÉSULTAT À AFFECTER', 'val' => $resultat_a_affecter, 'type' => 'total'],
+        ['code' => 'DIMF_2016_1_5', 'libelle' => 'AFFECTATION DU RÉSULTAT BÉNÉFICIAIRE', 'val' => null, 'type' => 'titre'],
+        ['code' => '772', 'libelle' => 'Réserve générale', 'val' => $default_values['reserve_generale']],
+        ['code' => '773', 'libelle' => 'Réserve facultatives', 'val' => $default_values['reserve_facultative']],
+        ['code' => '774', 'libelle' => 'Autres réserves', 'val' => $default_values['autres_reserves']],
+        ['code' => '776', 'libelle' => 'Report à nouveau bénéficiaire', 'val' => $default_values['report_nouveau']],
+        ['code' => '777', 'libelle' => 'Autres affectations', 'val' => $default_values['autres_affectations']],
+        ['code' => 'DIMF_2016_1_11', 'libelle' => 'AFFECTATION DU RÉSULTAT DÉFICITAIRE', 'val' => null, 'type' => 'titre'],
+        ['code' => '776b', 'libelle' => '*Report à nouveau déficitaire', 'val' => $default_values['report_deficitaire']],
+        ['code' => '778', 'libelle' => '*Prélèvements sur les réserves', 'val' => $default_values['prelevement_reserves']],
+        ['code' => '779', 'libelle' => 'Autres', 'val' => $default_values['autres']],
+    ];
+    foreach ($lignes_excel as $l) {
+        $style = (isset($l['type']) && $l['type'] == 'total') ? 'background:#e8f5e9;' : '';
+        if (isset($l['type']) && ($l['type'] == 'titre' || $l['type'] == 'total')) {
+            $prop = '';
+            $repart = '';
+        } else {
+            $prop = number_format($l['val'],0,',',' ');
+            $repart = $prop;
+        }
+        echo '<tr style="' . $style . '"><td>' . $l['code'] . '</td><td class="text-left">' . htmlspecialchars($l['libelle']) . '</td>';
+        echo '<td>' . $prop . '</td><td>' . $repart . '</td></tr>';
     }
     echo '</tbody></table>';
     echo '</body></html>';
     exit;
 }
+
+// ============================================================
+// AFFICHAGE HTML
+// ============================================================
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -371,6 +407,13 @@ if ($format === 'excel') {
         .filter-item label { font-size:0.7rem; font-weight:600; text-transform:uppercase; color:#4b5563; }
         .filter-item select { background:white; border:1px solid #d1d5db; border-radius:12px; padding:8px 14px; font-size:0.85rem; }
         .btn-apply { background:#3b82f6; color:white; border:none; border-radius:40px; padding:8px 24px; cursor:pointer; }
+        .table-wrapper { overflow-x:auto; }
+        table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+        th { text-align:left; padding:12px 16px; background:#f8fafc; border-bottom:1px solid #e2e8f0; }
+        td { padding:10px 16px; border-bottom:1px solid #f1f5f9; }
+        .text-right { text-align:right; font-family:monospace; font-weight:500; }
+        .subtotal-row { background:#f8fafc; font-weight:600; }
+        .total-row { background:#f0fdf4; font-weight:700; }
         .form-group { margin-bottom:15px; }
         .form-group label { display:block; font-weight:600; margin-bottom:5px; color:#555; font-size:0.8rem; }
         .form-group input { width:100%; padding:10px 12px; border:1px solid #ddd; border-radius:8px; font-size:0.9rem; text-align:right; font-family:monospace; }
@@ -461,8 +504,7 @@ if ($format === 'excel') {
             <div class="info-box">
                 <i class="fas fa-info-circle"></i>
                 <div>
-                    <strong>Note :</strong> Conformément à la réglementation, les SFD doivent affecter au minimum 15% du bénéfice à la réserve générale.<br>
-                    Réserve générale actuelle : <strong><?= number_format($reserve_generale_solde,0,',',' ') ?> FCFA</strong>
+                    <strong>Note :</strong> Conformément à la réglementation, les SFD doivent affecter au minimum 15% du bénéfice à la réserve générale.
                 </div>
             </div>
         </div>
@@ -472,91 +514,132 @@ if ($format === 'excel') {
         <input type="hidden" name="action" value="save">
 
         <div class="card">
-            <div class="card-header"><i class="fas fa-chart-line"></i> DÉTERMINATION DU RÉSULTAT À AFFECTER</div>
+            <div class="card-header"><i class="fas fa-chart-line"></i> ÉTAT D'AFFECTATION DU RÉSULTAT</div>
             <div class="card-body">
-                <div class="form-group">
-                    <label>L80 - Résultat de l'exercice (bénéfice ou déficit)</label>
-                    <small style="display:block; color:#6b7280;">Calculé automatiquement à partir des produits et charges</small>
-                    <input type="number" name="resultat" step="1" id="resultat" class="calculated-value" value="<?= number_format($default_values['resultat'],0,'','') ?>">
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr><th>CODE</th><th>LIBELLÉS</th><th class="text-right">Proposition de répartition</th><th class="text-right">Répartition effective</th></tr>
+                        </thead>
+                        <tbody>
+                            <!-- Ligne DIMF_2016_1_1 (titre) -->
+                            <tr class="subtotal-row">
+                                <td>DIMF_2016_1_1</td>
+                                <td><strong>DÉTERMINATION DU RÉSULTAT À AFFECTER</strong></td>
+                                <td class="text-right">-</td>
+                                <td class="text-right">-</td>
+                            </tr>
+                            <!-- L80 : résultat -->
+                            <tr>
+                                <td>L80</td>
+                                <td>Résultat de l'exercice (+/-)</td>
+                                <td class="text-right"><input type="number" name="proposition_L80" step="1" class="form-control form-control-sm text-right" value="<?= number_format($resultat_exercice,0,'','') ?>" readonly style="background:#f3f4f6;"></td>
+                                <td class="text-right"><input type="number" name="repartition_L80" step="1" class="form-control form-control-sm text-right" value="<?= number_format($resultat_exercice,0,'','') ?>" readonly style="background:#f3f4f6;"></td>
+                            </tr>
+                            <!-- L70 : report antérieur -->
+                            <tr>
+                                <td>L70</td>
+                                <td>Report à nouveau (+/-)</td>
+                                <td class="text-right"><input type="number" name="proposition_L70" step="1" class="form-control form-control-sm text-right" value="<?= number_format($report_anterieur,0,'','') ?>" readonly style="background:#f3f4f6;"></td>
+                                <td class="text-right"><input type="number" name="repartition_L70" step="1" class="form-control form-control-sm text-right" value="<?= number_format($report_anterieur,0,'','') ?>" readonly style="background:#f3f4f6;"></td>
+                            </tr>
+                            <!-- 770 : résultat à affecter -->
+                            <tr class="total-row">
+                                <td>770</td>
+                                <td><strong>RÉSULTAT À AFFECTER</strong></td>
+                                <td class="text-right"><input type="text" id="resultat_a_affecter_display" readonly style="background:#f0fdf4; font-weight:bold; border:none; text-align:right; width:100%;" value="<?= number_format($resultat_a_affecter,0,',',' ') ?>"></td>
+                                <td class="text-right"><input type="text" id="resultat_a_affecter_repartition" readonly style="background:#f0fdf4; font-weight:bold; border:none; text-align:right; width:100%;" value="<?= number_format($resultat_a_affecter,0,',',' ') ?>"></td>
+                                <input type="hidden" name="resultat_a_affecter" value="<?= $resultat_a_affecter ?>">
+                            </tr>
+                            <!-- DIMF_2016_1_5 -->
+                            <tr class="subtotal-row">
+                                <td>DIMF_2016_1_5</td>
+                                <td><strong>AFFECTATION DU RÉSULTAT BÉNÉFICIAIRE</strong></td>
+                                <td class="text-right">-</td>
+                                <td class="text-right">-</td>
+                            </tr>
+                            <!-- 772 -->
+                            <tr>
+                                <td>772</td>
+                                <td>Réserve générale</td>
+                                <td class="text-right"><input type="number" name="proposition_772" step="1" class="form-control form-control-sm text-right" id="reserve_generale" value="<?= number_format($default_values['reserve_generale'],0,'','') ?>"></td>
+                                <td class="text-right"><input type="number" name="repartition_772" step="1" class="form-control form-control-sm text-right" id="reserve_generale_rep" value="<?= number_format($default_values['reserve_generale'],0,'','') ?>"></td>
+                            </tr>
+                            <!-- 773 -->
+                            <tr>
+                                <td>773</td>
+                                <td>Réserve facultatives</td>
+                                <td class="text-right"><input type="number" name="proposition_773" step="1" class="form-control form-control-sm text-right" id="reserve_facultative" value="<?= number_format($default_values['reserve_facultative'],0,'','') ?>"></td>
+                                <td class="text-right"><input type="number" name="repartition_773" step="1" class="form-control form-control-sm text-right" id="reserve_facultative_rep" value="<?= number_format($default_values['reserve_facultative'],0,'','') ?>"></td>
+                            </tr>
+                            <!-- 774 -->
+                            <tr>
+                                <td>774</td>
+                                <td>Autres réserves</td>
+                                <td class="text-right"><input type="number" name="proposition_774" step="1" class="form-control form-control-sm text-right" id="autres_reserves" value="<?= number_format($default_values['autres_reserves'],0,'','') ?>"></td>
+                                <td class="text-right"><input type="number" name="repartition_774" step="1" class="form-control form-control-sm text-right" id="autres_reserves_rep" value="<?= number_format($default_values['autres_reserves'],0,'','') ?>"></td>
+                            </tr>
+                            <!-- 776 (bénéficiaire) -->
+                            <tr>
+                                <td>776</td>
+                                <td>Report à nouveau bénéficiaire</td>
+                                <td class="text-right"><input type="number" name="proposition_776" step="1" class="form-control form-control-sm text-right" id="report_nouveau" value="<?= number_format($default_values['report_nouveau'],0,'','') ?>"></td>
+                                <td class="text-right"><input type="number" name="repartition_776" step="1" class="form-control form-control-sm text-right" id="report_nouveau_rep" value="<?= number_format($default_values['report_nouveau'],0,'','') ?>"></td>
+                            </tr>
+                            <!-- 777 -->
+                            <tr>
+                                <td>777</td>
+                                <td>Autres affectations</td>
+                                <td class="text-right"><input type="number" name="proposition_777" step="1" class="form-control form-control-sm text-right" id="autres_affectations" value="<?= number_format($default_values['autres_affectations'],0,'','') ?>"></td>
+                                <td class="text-right"><input type="number" name="repartition_777" step="1" class="form-control form-control-sm text-right" id="autres_affectations_rep" value="<?= number_format($default_values['autres_affectations'],0,'','') ?>"></td>
+                            </tr>
+                            <!-- DIMF_2016_1_11 -->
+                            <tr class="subtotal-row">
+                                <td>DIMF_2016_1_11</td>
+                                <td><strong>AFFECTATION DU RÉSULTAT DÉFICITAIRE</strong></td>
+                                <td class="text-right">-</td>
+                                <td class="text-right">-</td>
+                            </tr>
+                            <!-- 776b (déficitaire) -->
+                            <tr>
+                                <td>776b</td>
+                                <td>*Report à nouveau déficitaire</td>
+                                <td class="text-right"><input type="number" name="proposition_776b" step="1" class="form-control form-control-sm text-right" id="report_deficitaire" value="<?= number_format($default_values['report_deficitaire'],0,'','') ?>"></td>
+                                <td class="text-right"><input type="number" name="repartition_776b" step="1" class="form-control form-control-sm text-right" id="report_deficitaire_rep" value="<?= number_format($default_values['report_deficitaire'],0,'','') ?>"></td>
+                            </tr>
+                            <!-- 778 -->
+                            <tr>
+                                <td>778</td>
+                                <td>*Prélèvements sur les réserves</td>
+                                <td class="text-right"><input type="number" name="proposition_778" step="1" class="form-control form-control-sm text-right" id="prelevement_reserves" value="<?= number_format($default_values['prelevement_reserves'],0,'','') ?>"></td>
+                                <td class="text-right"><input type="number" name="repartition_778" step="1" class="form-control form-control-sm text-right" id="prelevement_reserves_rep" value="<?= number_format($default_values['prelevement_reserves'],0,'','') ?>"></td>
+                            </tr>
+                            <!-- 779 -->
+                            <tr>
+                                <td>779</td>
+                                <td>Autres</td>
+                                <td class="text-right"><input type="number" name="proposition_779" step="1" class="form-control form-control-sm text-right" id="autres" value="<?= number_format($default_values['autres'],0,'','') ?>"></td>
+                                <td class="text-right"><input type="number" name="repartition_779" step="1" class="form-control form-control-sm text-right" id="autres_rep" value="<?= number_format($default_values['autres'],0,'','') ?>"></td>
+                            </tr>
+                            <!-- Ligne TOTAL (affichage) -->
+                            <tr class="total-row">
+                                <td></td>
+                                <td><strong>TOTAL AFFECTATIONS</strong></td>
+                                <td class="text-right" id="total_proposition_display"><?= number_format($total_proposition,0,',',' ') ?></td>
+                                <td class="text-right" id="total_repartition_display"><?= number_format($total_repartition_effective,0,',',' ') ?></td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
-                <div class="form-group">
-                    <label>L70 - Report à nouveau antérieur (bénéfice ou déficit)</label>
-                    <small style="display:block; color:#6b7280;">Solde des comptes de report à nouveau</small>
-                    <input type="number" name="report_anterieur" step="1" id="report_anterieur" class="calculated-value" value="<?= number_format($default_values['report_anterieur'],0,'','') ?>">
-                </div>
-                <div class="form-group" style="background:#f0fdf4; padding:12px; border-radius:12px;">
-                    <label style="font-weight:bold;">RÉSULTAT À AFFECTER (L80 + L70)</label>
-                    <input type="text" id="resultat_a_affecter_display" readonly style="background:#f0fdf4; font-weight:bold; font-size:1.1rem;" value="<?= number_format($resultat_a_affecter,0,',',' ') ?> FCFA">
-                </div>
-            </div>
-        </div>
-
-        <?php if ($resultat_a_affecter >= 0): ?>
-        <div class="card">
-            <div class="card-header"><i class="fas fa-plus-circle"></i> AFFECTATION DU RÉSULTAT BÉNÉFICIAIRE</div>
-            <div class="card-body">
-                <div class="form-group">
-                    <label>772 - Réserve générale (minimum 15% du bénéfice)</label>
-                    <input type="number" name="reserve_generale" step="1" id="reserve_generale" value="<?= number_format($default_values['reserve_generale'],0,'','') ?>">
-                </div>
-                <div class="form-group">
-                    <label>773 - Réserve facultative</label>
-                    <input type="number" name="reserve_facultative" step="1" id="reserve_facultative" value="<?= number_format($default_values['reserve_facultative'],0,'','') ?>">
-                </div>
-                <div class="form-group">
-                    <label>774 - Autres réserves</label>
-                    <input type="number" name="autres_reserves" step="1" id="autres_reserves" value="<?= number_format($default_values['autres_reserves'],0,'','') ?>">
-                </div>
-                <div class="form-group">
-                    <label>776 - Report à nouveau bénéficiaire</label>
-                    <input type="number" name="report_nouveau" step="1" id="report_nouveau" value="<?= number_format($default_values['report_nouveau'],0,'','') ?>">
-                </div>
-                <div class="form-group">
-                    <label>777 - Autres affectations</label>
-                    <input type="number" name="autres_affectations" step="1" id="autres_affectations" value="<?= number_format($default_values['autres_affectations'],0,'','') ?>">
-                </div>
-                <div class="form-group" style="background:#f0fdf4; padding:12px; border-radius:12px;">
-                    <label style="font-weight:bold;">TOTAL AFFECTATIONS</label>
-                    <input type="text" id="total_affectations_display" readonly style="background:#f0fdf4; font-weight:bold;" value="<?= number_format($total_affectations,0,',',' ') ?> FCFA">
-                </div>
-            </div>
-        </div>
-        <?php else: ?>
-        <div class="card">
-            <div class="card-header"><i class="fas fa-minus-circle"></i> AFFECTATION DU RÉSULTAT DÉFICITAIRE</div>
-            <div class="card-body">
-                <div class="form-group">
-                    <label>776 - Report à nouveau déficitaire</label>
-                    <input type="number" name="report_deficitaire" step="1" id="report_deficitaire" value="<?= number_format($default_values['report_deficitaire'],0,'','') ?>">
-                </div>
-                <div class="form-group">
-                    <label>778 - Prélèvement sur les réserves</label>
-                    <input type="number" name="prelevement_reserves" step="1" id="prelevement_reserves" value="<?= number_format($default_values['prelevement_reserves'],0,'','') ?>">
-                </div>
-                <div class="form-group" style="background:#f0fdf4; padding:12px; border-radius:12px;">
-                    <label style="font-weight:bold;">TOTAL AFFECTATIONS</label>
-                    <input type="text" id="total_affectations_display" readonly style="background:#f0fdf4; font-weight:bold;" value="<?= number_format($total_deficit,0,',',' ') ?> FCFA">
-                </div>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <div class="card">
-            <div class="card-header"><i class="fas fa-check-circle"></i> VÉRIFICATION ET SAUVEGARDE</div>
-            <div class="card-body">
-                <div class="info-box" id="verification-box">
-                    <i class="fas fa-calculator"></i>
-                    <div id="verification-message">Vérification de l'équilibre...</div>
-                </div>
-                <div style="text-align:center; margin-top:20px;">
-                    <button type="submit" class="btn-save" id="btn-submit"><i class="fas fa-save"></i> Enregistrer l'affectation</button>
+                <div style="margin-top:20px; text-align:center;">
+                    <button type="submit" class="btn-save"><i class="fas fa-save"></i> Enregistrer l'affectation</button>
                 </div>
             </div>
         </div>
     </form>
 
     <div class="footer">
-        <i class="fas fa-calendar-alt"></i> Document généré le <?= date('d/m/Y à H:i:s') ?> – Données extraites de la base Mandigo
+        <i class="fas fa-calendar-alt"></i> Document généré le <?= date('d/m/Y à H:i:s') ?> – Données issues de la table <code>z_bceao_affectation_resultat</code>
     </div>
 </div>
 
@@ -611,62 +694,10 @@ if ($format === 'excel') {
         form.removeChild(input);
     }
 
-    function verifierEquilibre() {
-        let resultat = parseFloat(document.getElementById('resultat').value) || 0;
-        let reportAnterieur = parseFloat(document.getElementById('report_anterieur').value) || 0;
-        let resultatAAffecter = resultat + reportAnterieur;
-        document.getElementById('resultat_a_affecter_display').value = resultatAAffecter.toLocaleString('fr-FR') + ' FCFA';
-
-        let totalAffectations = 0;
-        <?php if ($resultat_a_affecter >= 0): ?>
-            let reserveGenerale = parseFloat(document.getElementById('reserve_generale').value) || 0;
-            let reserveFacultative = parseFloat(document.getElementById('reserve_facultative').value) || 0;
-            let autresReserves = parseFloat(document.getElementById('autres_reserves').value) || 0;
-            let reportNouveau = parseFloat(document.getElementById('report_nouveau').value) || 0;
-            let autresAffectations = parseFloat(document.getElementById('autres_affectations').value) || 0;
-            totalAffectations = reserveGenerale + reserveFacultative + autresReserves + reportNouveau + autresAffectations;
-            let minReserve = resultatAAffecter * 0.15;
-            let warningHtml = '';
-            if (reserveGenerale < minReserve && resultatAAffecter > 0) {
-                warningHtml = '<br><span style="color:#ef6c00;">⚠️ La dotation à la réserve générale (' + reserveGenerale.toLocaleString('fr-FR') + ' FCFA) est inférieure au minimum requis de ' + minReserve.toLocaleString('fr-FR') + ' FCFA (15%).</span>';
-            }
-        <?php else: ?>
-            let reportDeficitaire = parseFloat(document.getElementById('report_deficitaire').value) || 0;
-            let prelevementReserves = parseFloat(document.getElementById('prelevement_reserves').value) || 0;
-            totalAffectations = reportDeficitaire + prelevementReserves;
-            let warningHtml = '';
-        <?php endif; ?>
-
-        document.getElementById('total_affectations_display').value = totalAffectations.toLocaleString('fr-FR') + ' FCFA';
-        let difference = resultatAAffecter - totalAffectations;
-        let box = document.getElementById('verification-box');
-        let msg = document.getElementById('verification-message');
-        let submitBtn = document.getElementById('btn-submit');
-
-        if (Math.abs(difference) < 1) {
-            box.className = 'info-box';
-            msg.innerHTML = '<span style="color:#2e7d32;">✓ ÉQUILIBRE - Le résultat à affecter correspond au total des affectations.</span>' + (typeof warningHtml !== 'undefined' ? warningHtml : '');
-            submitBtn.disabled = false;
-        } else {
-            box.className = 'alert alert-error';
-            msg.innerHTML = '<span style="color:#c62828;">✗ DÉSÉQUILIBRE - Écart de ' + Math.abs(difference).toLocaleString('fr-FR') + ' FCFA. Veuillez ajuster les montants.</span>' + (typeof warningHtml !== 'undefined' ? warningHtml : '');
-            submitBtn.disabled = true;
-        }
-    }
-
     document.addEventListener('DOMContentLoaded', function() {
         updateDynamicSelect();
         document.getElementById('typePeriodeSelect').addEventListener('change', updateDynamicSelect);
         document.getElementById('btnPdf').addEventListener('click', exporterPDF);
-
-        const inputs = ['resultat', 'report_anterieur', 'reserve_generale', 'reserve_facultative', 
-                        'autres_reserves', 'report_nouveau', 'autres_affectations', 'report_deficitaire', 
-                        'prelevement_reserves'];
-        inputs.forEach(id => {
-            const inp = document.getElementById(id);
-            if (inp) { inp.addEventListener('input', verifierEquilibre); inp.addEventListener('change', verifierEquilibre); }
-        });
-        verifierEquilibre();
     });
 </script>
 </body>

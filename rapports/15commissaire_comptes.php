@@ -1,6 +1,6 @@
 <?php
 // 15-CommAuxComptes.php - Suivi des commissariats aux comptes
-// Version avec 5 lignes par défaut pour les commissaires et les réserves
+// Utilise la table existante z_bceao_annexes_rapport
 
 session_start();
 
@@ -9,7 +9,11 @@ require_once '../databases/database.php';
 require_once '../fpdf/fpdf.php';
 
 // ============================================================
-// PARAMÈTRES (POST uniquement)
+// VÉRIFICATION / ADAPTATION DE LA TABLE
+// ============================================================
+
+// ============================================================
+// PARAMÈTRES
 // ============================================================
 $exercice     = isset($_POST['exercice']) ? (int)$_POST['exercice'] : (isset($_SESSION['comm_exercice']) ? $_SESSION['comm_exercice'] : date('Y'));
 $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode'] : (isset($_SESSION['comm_type_periode']) ? $_SESSION['comm_type_periode'] : 'annuel');
@@ -18,24 +22,20 @@ $trimestre    = isset($_POST['trimestre']) ? (int)$_POST['trimestre'] : (isset($
 $semestre     = isset($_POST['semestre']) ? (int)$_POST['semestre'] : (isset($_SESSION['comm_semestre']) ? $_SESSION['comm_semestre'] : 2);
 $format       = isset($_POST['format']) ? $_POST['format'] : 'html';
 
-// Sauvegarde en session (sauf le format)
 $_SESSION['comm_exercice'] = $exercice;
 $_SESSION['comm_type_periode'] = $type_periode;
 $_SESSION['comm_mois'] = $mois;
 $_SESSION['comm_trimestre'] = $trimestre;
 $_SESSION['comm_semestre'] = $semestre;
 
-// Calcul de la période
 switch ($type_periode) {
     case 'trimestre': $mois = $trimestre * 3; break;
     case 'semestre':  $mois = ($semestre == 1) ? 6 : 12; break;
     case 'annuel':    $mois = 12; break;
     default:          $mois = isset($_POST['mois']) ? (int)$_POST['mois'] : 12;
 }
-
 $date_fin_periode = date('Y-m-t', strtotime($exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01'));
 
-// Libellé période
 switch ($type_periode) {
     case 'mensuel':   $lib_periode = 'Mois ' . str_pad($mois,2,'0',STR_PAD_LEFT) . '/' . $exercice; break;
     case 'trimestre': $lib_periode = $trimestre . 'e Trim. ' . $exercice; break;
@@ -44,42 +44,7 @@ switch ($type_periode) {
 }
 
 // ============================================================
-// CRÉATION DES TABLES (si elles n'existent pas)
-// ============================================================
-try {
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS commissariat_aux_comptes (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            exercice INT NOT NULL,
-            commissaire_designe ENUM('oui','non') DEFAULT 'non',
-            comptes_certifies ENUM('oui','non') DEFAULT 'non',
-            avis ENUM('sans_reserve','avec_reserve','defavorable','impossible') DEFAULT NULL,
-            date_mise_a_jour TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_exercice (exercice)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    ");
-
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS commissaires (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            exercice INT NOT NULL,
-            nom VARCHAR(200) NOT NULL,
-            INDEX idx_exercice (exercice)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    ");
-
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS reserves (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            exercice INT NOT NULL,
-            reserve TEXT NOT NULL,
-            INDEX idx_exercice (exercice)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    ");
-} catch (PDOException $e) { /* ignorer */ }
-
-// ============================================================
-// RÉCUPÉRATION DES DONNÉES EXISTANTES
+// LECTURE DES DONNÉES
 // ============================================================
 $data = [
     'commissaire_designe' => 'non',
@@ -90,109 +55,64 @@ $commissaires = [];
 $reserves = [];
 
 try {
-    // Données principales
-    $stmt = $pdo->prepare("SELECT * FROM commissariat_aux_comptes WHERE exercice = :exercice");
+    $stmt = $pdo->prepare("SELECT code_indicateur, valeur_text FROM z_bceao_annexes_rapport WHERE exercice = :exercice AND statut = 'actif'");
     $stmt->execute([':exercice' => $exercice]);
-    $row = $stmt->fetch();
-    if ($row) {
-        $data['commissaire_designe'] = $row['commissaire_designe'];
-        $data['comptes_certifies'] = $row['comptes_certifies'];
-        $data['avis'] = $row['avis'];
-    }
+    $rows = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
 
-    // Commissaires : on veut toujours au moins 5 lignes
-    $stmt = $pdo->prepare("SELECT nom FROM commissaires WHERE exercice = :exercice ORDER BY id");
-    $stmt->execute([':exercice' => $exercice]);
-    while ($row = $stmt->fetch()) {
-        $commissaires[] = $row['nom'];
-    }
-    while (count($commissaires) < 5) {
-        $commissaires[] = '';
-    }
+    if (isset($rows['COMM_DESIGNE'])) $data['commissaire_designe'] = $rows['COMM_DESIGNE'];
+    if (isset($rows['COMM_CERTIFIES'])) $data['comptes_certifies'] = $rows['COMM_CERTIFIES'];
+    if (isset($rows['COMM_AVIS'])) $data['avis'] = $rows['COMM_AVIS'];
 
-    // Réserves : on veut toujours au moins 5 lignes
-    $stmt = $pdo->prepare("SELECT reserve FROM reserves WHERE exercice = :exercice ORDER BY id");
-    $stmt->execute([':exercice' => $exercice]);
-    while ($row = $stmt->fetch()) {
-        $reserves[] = $row['reserve'];
+    foreach ($rows as $code => $val) {
+        if (strpos($code, 'COMMISSAIRE_') === 0 && !empty($val)) $commissaires[] = $val;
+        if (strpos($code, 'RESERVE_') === 0 && !empty($val)) $reserves[] = $val;
     }
-    while (count($reserves) < 5) {
-        $reserves[] = '';
-    }
-} catch (PDOException $e) { /* ignorer */ }
+} catch (PDOException $e) {}
+
+while (count($commissaires) < 5) $commissaires[] = '';
+while (count($reserves) < 5) $reserves[] = '';
 
 // ============================================================
-// SAUVEGARDE DES DONNÉES
+// SAUVEGARDE
 // ============================================================
 $message = '';
 $message_type = '';
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] == 'save') {
-    $commissaire_designe = isset($_POST['commissaire_designe']) ? $_POST['commissaire_designe'] : 'non';
-    $comptes_certifies = isset($_POST['comptes_certifies']) ? $_POST['comptes_certifies'] : 'non';
-    $avis = isset($_POST['avis']) ? $_POST['avis'] : null;
-
-    // Récupération des listes dynamiques
-    $commissaires_post = isset($_POST['commissaires']) ? $_POST['commissaires'] : [];
-    $reserves_post = isset($_POST['reserves']) ? $_POST['reserves'] : [];
-
-    // Nettoyage : suppression des champs vides
-    $commissaires_post = array_filter(array_map('trim', $commissaires_post), 'strlen');
-    $reserves_post = array_filter(array_map('trim', $reserves_post), 'strlen');
-
-    // Si les listes sont vides, on met une ligne vide par défaut pour l'affichage ultérieur
-    if (empty($commissaires_post)) $commissaires_post = [''];
-    if (empty($reserves_post)) $reserves_post = [''];
-
     try {
-        // Mise à jour de la table principale
-        $stmt = $pdo->prepare("
-            INSERT INTO commissariat_aux_comptes (exercice, commissaire_designe, comptes_certifies, avis)
-            VALUES (:exercice, :commissaire_designe, :comptes_certifies, :avis)
-            ON DUPLICATE KEY UPDATE
-                commissaire_designe = VALUES(commissaire_designe),
-                comptes_certifies = VALUES(comptes_certifies),
-                avis = VALUES(avis)
-        ");
-        $stmt->execute([
-            ':exercice' => $exercice,
-            ':commissaire_designe' => $commissaire_designe,
-            ':comptes_certifies' => $comptes_certifies,
-            ':avis' => $avis
-        ]);
+        $stmtDel = $pdo->prepare("DELETE FROM z_bceao_annexes_rapport WHERE exercice = :exercice AND (code_indicateur LIKE 'COMM_%' OR code_indicateur LIKE 'COMMISSAIRE_%' OR code_indicateur LIKE 'RESERVE_%')");
+        $stmtDel->execute([':exercice' => $exercice]);
 
-        // Mise à jour des commissaires
-        $pdo->prepare("DELETE FROM commissaires WHERE exercice = :exercice")->execute([':exercice' => $exercice]);
-        $stmtIns = $pdo->prepare("INSERT INTO commissaires (exercice, nom) VALUES (:exercice, :nom)");
+        $stmtIns = $pdo->prepare("INSERT INTO z_bceao_annexes_rapport (exercice, code_indicateur, valeur_text, statut) VALUES (:exercice, :code, :val, 'actif')");
+
+        $commissaire_designe = isset($_POST['commissaire_designe']) ? $_POST['commissaire_designe'] : 'non';
+        $comptes_certifies = isset($_POST['comptes_certifies']) ? $_POST['comptes_certifies'] : 'non';
+        $avis = isset($_POST['avis']) ? $_POST['avis'] : null;
+
+        $stmtIns->execute([':exercice' => $exercice, ':code' => 'COMM_DESIGNE', ':val' => $commissaire_designe]);
+        $stmtIns->execute([':exercice' => $exercice, ':code' => 'COMM_CERTIFIES', ':val' => $comptes_certifies]);
+        if (!empty($avis)) $stmtIns->execute([':exercice' => $exercice, ':code' => 'COMM_AVIS', ':val' => $avis]);
+
+        $commissaires_post = isset($_POST['commissaires']) ? array_filter(array_map('trim', $_POST['commissaires']), 'strlen') : [];
+        $i = 1;
         foreach ($commissaires_post as $nom) {
-            if (!empty($nom)) {
-                $stmtIns->execute([':exercice' => $exercice, ':nom' => $nom]);
-            }
+            $stmtIns->execute([':exercice' => $exercice, ':code' => 'COMMISSAIRE_' . $i, ':val' => $nom]);
+            $i++;
         }
 
-        // Mise à jour des réserves
-        $pdo->prepare("DELETE FROM reserves WHERE exercice = :exercice")->execute([':exercice' => $exercice]);
-        $stmtInsRes = $pdo->prepare("INSERT INTO reserves (exercice, reserve) VALUES (:exercice, :reserve)");
-        foreach ($reserves_post as $reserve) {
-            if (!empty($reserve)) {
-                $stmtInsRes->execute([':exercice' => $exercice, ':reserve' => $reserve]);
-            }
+        $reserves_post = isset($_POST['reserves']) ? array_filter(array_map('trim', $_POST['reserves']), 'strlen') : [];
+        $j = 1;
+        foreach ($reserves_post as $res) {
+            $stmtIns->execute([':exercice' => $exercice, ':code' => 'RESERVE_' . $j, ':val' => $res]);
+            $j++;
         }
 
-        // Mise à jour des variables d'affichage
         $data['commissaire_designe'] = $commissaire_designe;
         $data['comptes_certifies'] = $comptes_certifies;
         $data['avis'] = $avis;
         $commissaires = $commissaires_post;
         $reserves = $reserves_post;
-
-        // S'assurer qu'on a au moins 5 commissaires et 5 réserves pour l'affichage
-        while (count($commissaires) < 5) {
-            $commissaires[] = '';
-        }
-        while (count($reserves) < 5) {
-            $reserves[] = '';
-        }
+        while (count($commissaires) < 5) $commissaires[] = '';
+        while (count($reserves) < 5) $reserves[] = '';
 
         $message = "Informations enregistrées avec succès !";
         $message_type = "success";
@@ -282,17 +202,22 @@ if ($format === 'pdf') {
     $pdf->Cell(0, 7, $pdf->convert($data['commissaire_designe'] == 'oui' ? 'Oui' : 'Non'), 0, 1);
     $pdf->Ln(3);
 
-    // 2. Noms des commissaires (5 lignes minimum)
+    // 2. Noms des commissaires
     $pdf->SetFont('Arial', 'B', 9);
     $pdf->Cell(0, 7, $pdf->convert('Nom des commissaires aux comptes ou des cabinets :'), 0, 1);
     $pdf->SetFont('Arial', '', 9);
     $i = 1;
+    $has_comm = false;
     foreach ($commissaires as $nom) {
         if (!empty($nom)) {
             $pdf->Cell(20, 6, $pdf->convert($i . '.'), 0, 0);
             $pdf->Cell(0, 6, $pdf->convert($nom), 0, 1);
             $i++;
+            $has_comm = true;
         }
+    }
+    if (!$has_comm) {
+        $pdf->Cell(0, 7, $pdf->convert('Aucun commissaire renseigné.'), 0, 1);
     }
     $pdf->Ln(5);
 
@@ -304,7 +229,7 @@ if ($format === 'pdf') {
     $pdf->Cell(0, 7, $pdf->convert($data['comptes_certifies'] == 'oui' ? 'Oui' : 'Non'), 0, 1);
     $pdf->Ln(3);
 
-    // 4. Avec ou sans réserves (toujours affiché)
+    // 4. Avec ou sans réserves
     $pdf->Cell(80, 7, $pdf->convert('Avec ou sans réserves :'), 0, 0);
     $avis_text = '';
     if ($data['comptes_certifies'] == 'oui' && !empty($data['avis'])) {
@@ -321,21 +246,21 @@ if ($format === 'pdf') {
     $pdf->Cell(0, 7, $pdf->convert($avis_text), 0, 1);
     $pdf->Ln(3);
 
-    // 5. Liste des principales réserves (toujours affichée)
+    // 5. Liste des principales réserves
     $pdf->SetFont('Arial', 'B', 9);
     $pdf->Cell(0, 7, $pdf->convert('Liste des principales réserves :'), 0, 1);
     $pdf->SetFont('Arial', '', 9);
     $j = 1;
-    $has_reserve = false;
+    $has_res = false;
     foreach ($reserves as $reserve) {
         if (!empty($reserve)) {
             $pdf->Cell(20, 6, $pdf->convert($j . '.'), 0, 0);
             $pdf->MultiCell(0, 6, $pdf->convert($reserve));
             $j++;
-            $has_reserve = true;
+            $has_res = true;
         }
     }
-    if (!$has_reserve) {
+    if (!$has_res) {
         $pdf->Cell(0, 7, $pdf->convert('Aucune réserve renseignée.'), 0, 1);
     }
 
@@ -357,6 +282,7 @@ if ($format === 'pdf') {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
+        /* Design original - INCHANGÉ */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background: #f1f5f9; padding: 24px; }
         .dashboard { max-width: 1200px; margin: 0 auto; }
@@ -519,7 +445,7 @@ if ($format === 'pdf') {
             </div>
         </div>
 
-        <!-- 2. Noms des commissaires (5 lignes minimum) -->
+        <!-- 2. Noms des commissaires -->
         <div class="card">
             <div class="card-header"><i class="fas fa-user-tie"></i> Nom des commissaires aux comptes ou des cabinets</div>
             <div class="card-body">
@@ -528,7 +454,7 @@ if ($format === 'pdf') {
                         <div class="dynamic-item" data-type="commissaire">
                             <span class="num-label"><?= $idx+1 ?>.</span>
                             <input type="text" class="form-control" name="commissaires[]" placeholder="Nom du cabinet ou du commissaire" value="<?= htmlspecialchars($nom) ?>">
-                            <?php if ($idx >= 5): // on permet de supprimer seulement les lignes au-delà de la 5e ?>
+                            <?php if ($idx >= 5): ?>
                                 <button type="button" class="btn-remove" onclick="supprimerLigne(this)"><i class="fas fa-trash"></i></button>
                             <?php endif; ?>
                         </div>
@@ -551,7 +477,6 @@ if ($format === 'pdf') {
                     </select>
                 </div>
 
-                <!-- Champ "Avec ou sans réserves" toujours visible -->
                 <div class="form-group">
                     <label>Avec ou sans réserves :</label>
                     <select name="avis">
@@ -566,7 +491,7 @@ if ($format === 'pdf') {
             </div>
         </div>
 
-        <!-- 4. Liste des principales réserves (5 lignes minimum) -->
+        <!-- 4. Liste des principales réserves -->
         <div class="card">
             <div class="card-header"><i class="fas fa-list"></i> Liste des principales réserves</div>
             <div class="card-body">
@@ -575,7 +500,7 @@ if ($format === 'pdf') {
                         <div class="dynamic-item" data-type="reserve">
                             <span class="num-label"><?= $idx+1 ?>.</span>
                             <textarea class="form-control" name="reserves[]" rows="2" placeholder="Décrivez la réserve..."><?= htmlspecialchars($reserve) ?></textarea>
-                            <?php if ($idx >= 5): // on permet de supprimer seulement les lignes au-delà de la 5e ?>
+                            <?php if ($idx >= 5): ?>
                                 <button type="button" class="btn-remove" onclick="supprimerLigne(this)"><i class="fas fa-trash"></i></button>
                             <?php endif; ?>
                         </div>
@@ -649,24 +574,20 @@ if ($format === 'pdf') {
         html += `<button type="button" class="btn-remove" onclick="supprimerLigne(this)"><i class="fas fa-trash"></i></button>`;
         div.innerHTML = html;
         container.appendChild(div);
-        // Mettre à jour les numéros
         renumberItems(containerId);
     }
 
     function supprimerLigne(btn) {
         const div = btn.closest('.dynamic-item');
         const container = div.parentElement;
-        // On ne supprime pas si c'est une des 5 premières lignes
         const type = div.getAttribute('data-type');
         const items = container.getElementsByClassName('dynamic-item');
         const index = Array.from(items).indexOf(div);
         if (index < 5) {
-            // Les 5 premières ne peuvent pas être supprimées, on efface le contenu
             const input = div.querySelector('input, textarea');
             if (input) input.value = '';
             return;
         }
-        // Sinon, on supprime la ligne
         div.remove();
         renumberItems(container.id);
     }
@@ -695,7 +616,7 @@ if ($format === 'pdf') {
             [],
             ['Nom des commissaires aux comptes ou des cabinets :'],
         ];
-        // Récupérer les commissaires du formulaire (ou des valeurs existantes)
+        // Récupérer les commissaires du formulaire
         const commInputs = document.querySelectorAll('input[name="commissaires[]"]');
         let commValues = [];
         commInputs.forEach(inp => { if (inp.value.trim() !== '') commValues.push(inp.value.trim()); });

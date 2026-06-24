@@ -1,6 +1,6 @@
 <?php
 // DIMF_2007.php - État des biens détenus dans le cadre de la concession
-// FPDF intégré, gestion POST, Bootstrap
+// Alimentation depuis immobilisations + saisie concessionnaire
 
 session_start();
 
@@ -9,6 +9,7 @@ session_start();
 // ============================================================
 require_once '../databases/database.php';
 require_once '../fpdf/fpdf.php';
+
 
 class PDF_DIMF extends FPDF {
     public $codeDimf  = 'DIMF';
@@ -76,25 +77,29 @@ class PDF_DIMF extends FPDF {
     }
 
     function TableRow($cols, $data, $style = '') {
+        $fill = false;
+        $this->SetTextColor(15, 23, 42);
+        $this->SetDrawColor(226, 232, 240);
+        $this->SetLineWidth(0.1);
         switch ($style) {
             case 'subtotal':
                 $this->SetFillColor(248, 250, 252);
                 $this->SetFont('Arial', 'B', 8);
-                $fill = true; break;
+                $fill = true;
+                break;
             case 'total':
                 $this->SetFillColor(240, 253, 244);
                 $this->SetFont('Arial', 'B', 8.5);
-                $fill = true; break;
+                $fill = true;
+                break;
             default:
                 $this->SetFillColor(255, 255, 255);
                 $this->SetFont('Arial', '', 7.5);
-                $fill = false; break;
+                $fill = false;
+                break;
         }
-        $this->SetTextColor(15, 23, 42);
-        $this->SetDrawColor(226, 232, 240);
-        $this->SetLineWidth(0.1);
         foreach ($cols as $i => $col) {
-            $val   = isset($data[$i]) ? $data[$i] : '';
+            $val = isset($data[$i]) ? $data[$i] : '';
             $align = isset($col['align']) ? $col['align'] : 'L';
             $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
         }
@@ -107,7 +112,7 @@ class PDF_DIMF extends FPDF {
 }
 
 // ============================================================
-// PARAMÈTRES (priorité POST > GET > défaut)
+// PARAMÈTRES
 // ============================================================
 $exercice     = isset($_POST['exercice'])     ? (int)$_POST['exercice']     : (isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y'));
 $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode']      : (isset($_GET['type_periode']) ? $_GET['type_periode'] : 'mensuel');
@@ -121,111 +126,102 @@ switch ($type_periode) {
     case 'annuel':    $mois = 12; break;
 }
 
-$date_fin_periode = date('Y-m-t', strtotime($exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01'));
-
 // ============================================================
-// TRAITEMENT DU FORMULAIRE (AJOUT / MODIFICATION / SUPPRESSION)
+// TRAITEMENT DU FORMULAIRE DE SAISIE CONCESSIONNAIRE
 // ============================================================
 $message = '';
-$message_type = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $date_acquisition = (!empty($_POST['date_acquisition'])) ? $_POST['date_acquisition'] : null;
-    $duree_concession = (!empty($_POST['duree_concession'])) ? (int)$_POST['duree_concession'] : null;
-    try {
-        // Création de la table si elle n'existe pas
-        $pdo->exec("CREATE TABLE IF NOT EXISTS biens_concession (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            exercice INT NOT NULL,
-            libelle VARCHAR(255) NOT NULL,
-            valeur_inventaire DECIMAL(15,2) DEFAULT 0,
-            concessionnaire_nom VARCHAR(200),
-            valeur_declaree DECIMAL(15,2) DEFAULT 0,
-            date_acquisition DATE,
-            duree_concession INT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_concession') {
+    // Récupération des données postées
+    $concessionnaires = $_POST['concessionnaire'] ?? [];
+    $immobilisation_ids = $_POST['immobilisation_id'] ?? [];
 
-        if ($_POST['action'] === 'add') {
-            $stmt = $pdo->prepare("INSERT INTO biens_concession (exercice, libelle, valeur_inventaire, concessionnaire_nom, valeur_declaree, date_acquisition, duree_concession) VALUES (:exercice, :libelle, :valeur_inventaire, :concessionnaire, :valeur_declaree, :date_acquisition, :duree)");
-            $stmt->execute([
-                ':exercice' => $exercice,
-                ':libelle' => $_POST['libelle'] ?? '',
-                ':valeur_inventaire' => $_POST['valeur_inventaire'] ?? 0,
-                ':concessionnaire' => $_POST['concessionnaire_nom'] ?? '',
-                ':valeur_declaree' => $_POST['valeur_declaree'] ?? 0,
-                ':date_acquisition' => $date_acquisition,
-                ':duree' => $duree_concession
-            ]);
-            $message = "Bien ajouté !";
-            $message_type = "success";
-        } elseif ($_POST['action'] === 'delete' && isset($_POST['id'])) {
-            $stmt = $pdo->prepare("DELETE FROM biens_concession WHERE id = :id AND exercice = :exercice");
-            $stmt->execute([':id' => (int)$_POST['id'], ':exercice' => $exercice]);
-            $message = "Bien supprimé !";
-            $message_type = "success";
-        } elseif ($_POST['action'] === 'update' && isset($_POST['id'])) {
-            $stmt = $pdo->prepare("UPDATE biens_concession SET libelle = :libelle, valeur_inventaire = :valeur_inventaire, concessionnaire_nom = :concessionnaire, valeur_declaree = :valeur_declaree, date_acquisition = :date_acquisition, duree_concession = :duree WHERE id = :id AND exercice = :exercice");
-            $stmt->execute([
-                ':id' => (int)$_POST['id'],
-                ':exercice' => $exercice,
-                ':libelle' => $_POST['libelle'] ?? '',
-                ':valeur_inventaire' => $_POST['valeur_inventaire'] ?? 0,
-                ':concessionnaire' => $_POST['concessionnaire_nom'] ?? '',
-                ':valeur_declaree' => $_POST['valeur_declaree'] ?? 0,
-                ':date_acquisition' => $date_acquisition,
-                ':duree' => $duree_concession
-            ]);
-            $message = "Bien modifié !";
-            $message_type = "success";
+    foreach ($immobilisation_ids as $index => $immob_id) {
+        $nom = trim($concessionnaires[$index] ?? '');
+        // Récupérer les infos de l'immobilisation
+        $stmt = $pdo->prepare("SELECT * FROM immobilisations WHERE immobilisation_id = :id");
+        $stmt->execute([':id' => $immob_id]);
+        $bien = $stmt->fetch();
+        if ($bien) {
+            $duree_annees = $bien['duree_mois_vie'] ? round($bien['duree_mois_vie'] / 12, 1) : 0;
+            $code = 'DIMF_2007_1_' . ($index + 1); // numéro séquentiel basé sur l'ordre d'affichage
+            // Vérifier si l'enregistrement existe déjà
+            $stmt_check = $pdo->prepare("SELECT id FROM z_bceao_concessions WHERE exercice = :exo AND code = :code");
+            $stmt_check->execute([':exo' => $exercice, ':code' => $code]);
+            if ($stmt_check->fetch()) {
+                // Mise à jour
+                $stmt_upd = $pdo->prepare("UPDATE z_bceao_concessions SET 
+                    duree = :duree,
+                    valeur_inventaire = :v_inv,
+                    concessionnaire_nom = :nom,
+                    valeur_declaree_cahier = :v_dec
+                    WHERE exercice = :exo AND code = :code");
+                $stmt_upd->execute([
+                    ':duree' => $duree_annees,
+                    ':v_inv' => $bien['montant_achat'],
+                    ':nom' => $nom,
+                    ':v_dec' => $bien['valeur_nette'],
+                    ':exo' => $exercice,
+                    ':code' => $code
+                ]);
+            } else {
+                // Insertion
+                $stmt_ins = $pdo->prepare("INSERT INTO z_bceao_concessions 
+                    (exercice, code, postes, duree, valeur_inventaire, concessionnaire_nom, valeur_declaree_cahier, statut)
+                    VALUES (:exo, :code, :postes, :duree, :v_inv, :nom, :v_dec, 'actif')");
+                $stmt_ins->execute([
+                    ':exo' => $exercice,
+                    ':code' => $code,
+                    ':postes' => $bien['libelle'],
+                    ':duree' => $duree_annees,
+                    ':v_inv' => $bien['montant_achat'],
+                    ':nom' => $nom,
+                    ':v_dec' => $bien['valeur_nette']
+                ]);
+            }
         }
-    } catch (PDOException $e) {
-        $message = "Erreur : " . $e->getMessage();
-        $message_type = "error";
     }
-    // Redirection pour éviter double soumission
-    $url = "DIMF_2007.php?exercice=$exercice&type_periode=$type_periode" .
-           ($type_periode=='mensuel' ? "&mois=$mois" : ($type_periode=='trimestre' ? "&trimestre=$trimestre" : ($type_periode=='semestre' ? "&semestre=$semestre" : ""))) .
-           "&msg=" . urlencode($message) . "&msg_type=$message_type";
-    header("Location: $url");
-    exit;
-}
-if (isset($_GET['msg'])) {
-    $message = $_GET['msg'];
-    $message_type = $_GET['msg_type'] ?? 'success';
+    $message = "<div class='alert-success'><i class='fas fa-check-circle'></i> Concessionnaires enregistrés avec succès.</div>";
 }
 
 // ============================================================
-// RÉCUPÉRATION DES BIENS
+// RÉCUPÉRATION DES IMMOBILISATIONS ET DES CONCESSIONS EXISTANTES
 // ============================================================
-$biens_concession = [];
-$total_valeur_inventaire = 0;
-$total_valeur_declaree = 0;
+// 1. Liste des immobilisations actives (ou toutes)
+$immobilisations = [];
 try {
-    $stmt = $pdo->prepare("SELECT * FROM biens_concession WHERE exercice = :exercice ORDER BY id");
-    $stmt->execute([':exercice' => $exercice]);
-    $biens_concession = $stmt->fetchAll();
-    foreach ($biens_concession as $bien) {
-        $total_valeur_inventaire += (float)$bien['valeur_inventaire'];
-        $total_valeur_declaree += (float)$bien['valeur_declaree'];
-    }
-} catch (PDOException $e) {}
-
-$edit_bien = null;
-if (isset($_GET['edit']) && is_numeric($_GET['edit'])) {
-    try {
-        $stmt = $pdo->prepare("SELECT * FROM biens_concession WHERE id = :id AND exercice = :exercice");
-        $stmt->execute([':id' => (int)$_GET['edit'], ':exercice' => $exercice]);
-        $edit_bien = $stmt->fetch();
-    } catch (PDOException $e) {}
+    $stmt = $pdo->prepare("SELECT * FROM immobilisations WHERE statut = 'actif' ORDER BY date_achat");
+    $stmt->execute();
+    $immobilisations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    // ignore
 }
 
+// 2. Récupération des concessions existantes pour l'exercice
+$concessions_exist = [];
+try {
+    $stmt = $pdo->prepare("SELECT * FROM z_bceao_concessions WHERE exercice = :exo ORDER BY code");
+    $stmt->execute([':exo' => $exercice]);
+    $concessions_exist = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    // ignore
+}
+
+// Création d'un tableau associatif code => données pour faciliter l'affichage
+$concessions_by_code = [];
+foreach ($concessions_exist as $c) {
+    $concessions_by_code[$c['code']] = $c;
+}
+
+// On va afficher les immobilisations et proposer de saisir les concessionnaires
+// Les codes seront générés séquentiellement
+
 // ============================================================
-// GÉNÉRATION PDF (si format=pdf)
+// GÉNÉRATION PDF (si demandé)
 // ============================================================
 $format = isset($_POST['format']) ? $_POST['format'] : (isset($_GET['format']) ? $_GET['format'] : 'html');
 
 if ($format === 'pdf') {
+    // On utilise les données de z_bceao_concessions pour le PDF
     switch ($type_periode) {
         case 'mensuel':   $lib_periode = 'Mois ' . str_pad($mois,2,'0',STR_PAD_LEFT) . '/' . $exercice; break;
         case 'trimestre': $lib_periode = $trimestre . 'e Trim. ' . $exercice; break;
@@ -245,36 +241,47 @@ if ($format === 'pdf') {
     $pdf->AddPage();
 
     $cols = [
-        ['label' => 'Libellé', 'w' => 60],
-        ['label' => 'Valeur inventaire', 'w' => 45, 'align' => 'R'],
-        ['label' => 'Concessionnaire', 'w' => 50],
-        ['label' => 'Valeur déclarée', 'w' => 45, 'align' => 'R'],
-        ['label' => 'Date acquisition', 'w' => 35, 'align' => 'C'],
-        ['label' => 'Durée (ans)', 'w' => 30, 'align' => 'C']
+        ['label' => 'CODE', 'w' => 30],
+        ['label' => 'postes', 'w' => 50],
+        ['label' => 'DURÉE', 'w' => 25, 'align' => 'R'],
+        ['label' => "VALEUR D'INVENTAIRE\nou VALEUR DE MARCHÉ", 'w' => 40, 'align' => 'R'],
+        ['label' => 'CONCESSIONAIRE', 'w' => 50],
+        ['label' => "VALEUR DÉCLARÉE\nDANS LE CAHIER DE CHARGES", 'w' => 40, 'align' => 'R']
     ];
     $pdf->SectionTitle('Biens en concession');
     $pdf->TableHeader($cols);
-    foreach ($biens_concession as $bien) {
+
+    $total_v_inv = 0;
+    $total_v_dec = 0;
+    foreach ($concessions_exist as $bien) {
         $pdf->TableRow($cols, [
-            PDF_DIMF::u($bien['libelle']),
+            $bien['code'],
+            PDF_DIMF::u($bien['postes'] ?? ''),
+            $bien['duree'] ? $bien['duree'] . ' ans' : '-',
             PDF_DIMF::montant($bien['valeur_inventaire']),
             PDF_DIMF::u($bien['concessionnaire_nom'] ?: '-'),
-            PDF_DIMF::montant($bien['valeur_declaree']),
-            $bien['date_acquisition'] ? date('d/m/Y', strtotime($bien['date_acquisition'])) : '-',
-            $bien['duree_concession'] ? $bien['duree_concession'] . ' ans' : '-'
+            PDF_DIMF::montant($bien['valeur_declaree_cahier'])
         ]);
+        $total_v_inv += $bien['valeur_inventaire'];
+        $total_v_dec += $bien['valeur_declaree_cahier'];
     }
+
     $pdf->TableRow($cols, [
+        '',
         'TOTAL',
-        PDF_DIMF::montant($total_valeur_inventaire),
         '',
-        PDF_DIMF::montant($total_valeur_declaree),
+        PDF_DIMF::montant($total_v_inv),
         '',
-        ''
+        PDF_DIMF::montant($total_v_dec)
     ], 'total');
+
     $pdf->Output('I', 'DIMF_2007_BiensConcession_' . $exercice . '_' . $type_periode . '.pdf');
     exit;
 }
+
+// ============================================================
+// AFFICHAGE HTML
+// ============================================================
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -286,7 +293,6 @@ if ($format === 'pdf') {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        /* Styles identiques aux autres DIMF */
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family:'Inter', sans-serif; background:#f1f5f9; padding:24px; }
         .dashboard { max-width:1400px; margin:0 auto; }
@@ -311,11 +317,12 @@ if ($format === 'pdf') {
         .text-right { text-align:right; font-family:monospace; font-weight:500; }
         .total-row { background:#f0fdf4; font-weight:700; }
         .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px 20px; border-radius:16px; display:flex; align-items:center; gap:14px; }
-        .action-buttons { display:flex; gap:8px; }
-        .btn-warning { background:#f59e0b; color:white; padding:4px 12px; border-radius:20px; text-decoration:none; font-size:0.75rem; }
-        .btn-danger { background:#ef4444; color:white; padding:4px 12px; border-radius:20px; border:none; cursor:pointer; font-size:0.75rem; }
         .page-footer { text-align:center; font-size:0.75rem; color:#6b7280; margin-top:16px; }
         @media print { .btn-group, .page-footer, #filtersCard { display:none; } }
+        .form-saisie { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+        .form-saisie input { flex:1; min-width:150px; }
+        .btn-save { background:#10b981; color:white; border:none; border-radius:40px; padding:6px 18px; cursor:pointer; }
+        .btn-save:hover { background:#059669; }
     </style>
 </head>
 <body>
@@ -375,89 +382,112 @@ if ($format === 'pdf') {
         </div>
     </form>
 
-    <?php if($message): ?>
-        <div class="info-box" style="background:<?= $message_type=='success'?'#d1fae5':'#fee2e2' ?>;border-left-color:<?= $message_type=='success'?'#10b981':'#ef4444' ?>;">
-            <?= htmlspecialchars($message) ?>
-        </div>
-    <?php endif; ?>
+    <?= $message ?>
 
+    <!-- ===== FORMULAIRE DE SAISIE DES CONCESSIONNAIRES ===== -->
     <div class="card">
-        <div class="card-header"><i class="fas <?= $edit_bien?'fa-edit':'fa-plus-circle' ?>"></i> <?= $edit_bien?'MODIFIER UN BIEN':'AJOUTER UN BIEN' ?></div>
+        <div class="card-header"><i class="fas fa-pen"></i> Saisie des concessionnaires</div>
         <form method="post">
-            <input type="hidden" name="action" value="<?= $edit_bien?'update':'add' ?>">
-            <?php if($edit_bien): ?><input type="hidden" name="id" value="<?= $edit_bien['id'] ?>"><?php endif; ?>
-            <div class="filters-row" style="margin-bottom:0;">
-                <div class="filter-item">
-                    <label>Libellé *</label>
-                    <input type="text" name="libelle" required value="<?= $edit_bien?htmlspecialchars($edit_bien['libelle']):'' ?>">
-                </div>
-                <div class="filter-item">
-                    <label>Valeur inventaire (FCFA)</label>
-                    <input type="number" name="valeur_inventaire" value="<?= $edit_bien?(int)$edit_bien['valeur_inventaire']:0 ?>">
-                </div>
-                <div class="filter-item">
-                    <label>Concessionnaire</label>
-                    <input type="text" name="concessionnaire_nom" value="<?= $edit_bien?htmlspecialchars($edit_bien['concessionnaire_nom']):'' ?>">
-                </div>
-                <div class="filter-item">
-                    <label>Valeur déclarée (FCFA)</label>
-                    <input type="number" name="valeur_declaree" value="<?= $edit_bien?(int)$edit_bien['valeur_declaree']:0 ?>">
-                </div>
-                <div class="filter-item">
-                    <label>Date acquisition</label>
-                    <input type="date" name="date_acquisition" value="<?= $edit_bien && $edit_bien['date_acquisition'] ? date('Y-m-d',strtotime($edit_bien['date_acquisition'])) : '' ?>">
-                </div>
-                <div class="filter-item">
-                    <label>Durée (années)</label>
-                    <input type="number" name="duree_concession" value="<?= $edit_bien && $edit_bien['duree_concession']!==null ? (int)$edit_bien['duree_concession'] : '' ?>">
-                </div>
-                <div class="filter-item">
-                    <button type="submit" class="btn-apply"><?= $edit_bien?'Mettre à jour':'Ajouter' ?></button>
-                </div>
-                <?php if($edit_bien): ?>
-                    <div class="filter-item">
-                        <a href="DIMF_2007.php?exercice=<?= $exercice ?>&type_periode=<?= $type_periode ?><?= $type_periode=='mensuel'?"&mois=$mois":($type_periode=='trimestre'?"&trimestre=$trimestre":($type_periode=='semestre'?"&semestre=$semestre":"")) ?>" class="btn-warning">Annuler</a>
-                    </div>
-                <?php endif; ?>
+            <input type="hidden" name="action" value="save_concession">
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Code</th>
+                            <th>postes</th>
+                            <th class="text-right">Durée</th>
+                            <th class="text-right">Valeur d'inventaire</th>
+                            <th class="text-right">Valeur nette</th>
+                            <th>Concessionnaire <span class="text-muted">(saisir ici)</span></th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($immobilisations)): ?>
+                            <tr><td colspan="7" class="text-center">Aucune immobilisation active.</td></tr>
+                        <?php else: ?>
+                            <?php
+                            $i = 1;
+                            foreach ($immobilisations as $bien):
+                                $code = 'DIMF_2007_1_' . $i;
+                                $duree = $bien['duree_mois_vie'] ? round($bien['duree_mois_vie'] / 12, 1) . ' ans' : '-';
+                                // Récupérer le nom du concessionnaire déjà enregistré
+                                $nom_existant = '';
+                                if (isset($concessions_by_code[$code])) {
+                                    $nom_existant = $concessions_by_code[$code]['concessionnaire_nom'];
+                                }
+                            ?>
+                                <tr>
+                                    <td><?= $code ?></td>
+                                    <td><?= htmlspecialchars($bien['libelle']) ?></td>
+                                    <td class="text-right"><?= $duree ?></td>
+                                    <td class="text-right"><?= number_format($bien['montant_achat'],0,',',' ') ?></td>
+                                    <td class="text-right"><?= number_format($bien['valeur_nette'],0,',',' ') ?></td>
+                                    <td>
+                                        <input type="hidden" name="immobilisation_id[]" value="<?= $bien['immobilisation_id'] ?>">
+                                        <input type="text" name="concessionnaire[]" value="<?= htmlspecialchars($nom_existant) ?>" class="form-control form-control-sm" placeholder="Nom du concessionnaire">
+                                    </td>
+                                    <td>
+                                        <button type="submit" class="btn-save btn-sm"><i class="fas fa-save"></i> Enregistrer</button>
+                                    </td>
+                                </tr>
+                            <?php
+                                $i++;
+                            endforeach;
+                            ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+            <div class="mt-3">
+                <button type="submit" class="btn-save"><i class="fas fa-save"></i> Enregistrer tous les concessionnaires</button>
+                <span class="text-muted ms-3">(seuls les champs remplis seront sauvegardés)</span>
             </div>
         </form>
     </div>
 
+    <!-- ===== TABLEAU DE L'ÉTAT ===== -->
     <div class="card">
-        <div class="card-header"><i class="fas fa-list-ul"></i> LISTE DES BIENS</div>
-        <?php if(empty($biens_concession)): ?>
-            <div class="info-box">Aucun bien enregistré.</div>
+        <div class="card-header"><i class="fas fa-list-ul"></i> ÉTAT DES BIENS DÉTENUS DANS LE CADRE DE LA CONCESSION</div>
+        <?php if(empty($concessions_exist)): ?>
+            <div class="info-box">Aucune concession enregistrée pour l'exercice <?= $exercice ?>.</div>
         <?php else: ?>
             <div class="table-wrapper">
                 <table>
                     <thead>
-                        <tr><th>Libellé</th><th class="text-right">Valeur inventaire</th><th>Concessionnaire</th><th class="text-right">Valeur déclarée</th><th>Date acquisition</th><th>Durée</th><th>Actions</th></tr>
+                        <tr>
+                            <th>CODE</th>
+                            <th>postes</th>
+                            <th class="text-right">DURÉE</th>
+                            <th class="text-right">VALEUR D'INVENTAIRE<br>ou VALEUR DE MARCHÉ</th>
+                            <th>CONCESSIONAIRE</th>
+                            <th class="text-right">VALEUR DÉCLARÉE<br>DANS LE CAHIER DE CHARGES</th>
+                        </tr>
                     </thead>
                     <tbody>
-                        <?php foreach($biens_concession as $b): ?>
+                        <?php
+                        $total_v_inv = 0;
+                        $total_v_dec = 0;
+                        foreach ($concessions_exist as $bien):
+                            $total_v_inv += $bien['valeur_inventaire'];
+                            $total_v_dec += $bien['valeur_declaree_cahier'];
+                        ?>
                             <tr>
-                                <td><?= htmlspecialchars($b['libelle']) ?></td>
-                                <td class="text-right"><?= number_format($b['valeur_inventaire'],0,',',' ') ?></td>
-                                <td><?= htmlspecialchars($b['concessionnaire_nom']?:'-') ?></td>
-                                <td class="text-right"><?= number_format($b['valeur_declaree'],0,',',' ') ?></td>
-                                <td><?= $b['date_acquisition']?date('d/m/Y',strtotime($b['date_acquisition'])):'-' ?></td>
-                                <td><?= $b['duree_concession']?$b['duree_concession'].' ans':'-' ?></td>
-                                <td class="action-buttons">
-                                    <a href="?exercice=<?= $exercice ?>&type_periode=<?= $type_periode ?><?= $type_periode=='mensuel'?"&mois=$mois":($type_periode=='trimestre'?"&trimestre=$trimestre":($type_periode=='semestre'?"&semestre=$semestre":"")) ?>&edit=<?= $b['id'] ?>" class="btn-warning"><i class="fas fa-edit"></i></a>
-                                    <form method="post" style="display:inline;" onsubmit="return confirm('Supprimer ?')">
-                                        <input type="hidden" name="action" value="delete">
-                                        <input type="hidden" name="id" value="<?= $b['id'] ?>">
-                                        <button type="submit" class="btn-danger"><i class="fas fa-trash-alt"></i></button>
-                                    </form>
-                                </td>
+                                <td><?= htmlspecialchars($bien['code']) ?></td>
+                                <td><?= htmlspecialchars($bien['postes'] ?? '') ?></td>
+                                <td class="text-right"><?= $bien['duree'] ? $bien['duree'] . ' ans' : '-' ?></td>
+                                <td class="text-right"><?= number_format($bien['valeur_inventaire'],0,',',' ') ?></td>
+                                <td><?= htmlspecialchars($bien['concessionnaire_nom'] ?: '-') ?></td>
+                                <td class="text-right"><?= number_format($bien['valeur_declaree_cahier'],0,',',' ') ?></td>
                             </tr>
                         <?php endforeach; ?>
                         <tr class="total-row">
-                            <td><strong>TOTAL</strong></td>
-                            <td class="text-right"><strong><?= number_format($total_valeur_inventaire,0,',',' ') ?></strong></td>
                             <td></td>
-                            <td class="text-right"><strong><?= number_format($total_valeur_declaree,0,',',' ') ?></strong></td>
-                            <td colspan="3"></td>
+                            <td><strong>TOTAL</strong></td>
+                            <td></td>
+                            <td class="text-right"><strong><?= number_format($total_v_inv,0,',',' ') ?></strong></td>
+                            <td></td>
+                            <td class="text-right"><strong><?= number_format($total_v_dec,0,',',' ') ?></strong></td>
                         </tr>
                     </tbody>
                 </table>
@@ -466,7 +496,7 @@ if ($format === 'pdf') {
     </div>
 
     <div class="page-footer">
-        <i class="fas fa-calendar-alt"></i> Document généré le <?= date('d/m/Y à H:i:s') ?> – Période : <?= $exercice ?> (<?= ucfirst($type_periode) ?>) arrêté au <?= date('d/m/Y', strtotime($date_fin_periode)) ?>
+        <i class="fas fa-calendar-alt"></i> Document généré le <?= date('d/m/Y à H:i:s') ?> – Période : <?= $exercice ?> (<?= ucfirst($type_periode) ?>) – Données issues des tables <code>immobilisations</code> et <code>z_bceao_concessions</code>
     </div>
 </div>
 
@@ -514,7 +544,7 @@ if ($format === 'pdf') {
         input.name = 'format';
         input.value = 'pdf';
         form.appendChild(input);
-        form.target = '_blank';
+        form.target = '_self';
         form.submit();
         form.target = '';
         form.removeChild(input);
@@ -522,11 +552,23 @@ if ($format === 'pdf') {
 
     function exporterExcel() {
         const wb = XLSX.utils.book_new();
-        const data = [['DIMF_2007 - BIENS EN CONCESSION'],['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],[],['Libellé','Valeur inventaire','Concessionnaire','Valeur déclarée','Date acquisition','Durée']];
-        <?php foreach($biens_concession as $b): ?>
-        data.push(['<?= addslashes($b['libelle']) ?>',<?= $b['valeur_inventaire'] ?>,'<?= addslashes($b['concessionnaire_nom']?:'-') ?>',<?= $b['valeur_declaree'] ?>,'<?= $b['date_acquisition']?date('d/m/Y',strtotime($b['date_acquisition'])):'-' ?>','<?= $b['duree_concession']??'-' ?>']);
+        const data = [
+            ['DIMF_2007 - ÉTAT DES BIENS DÉTENUS DANS LE CADRE DE LA CONCESSION'],
+            ['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],
+            [],
+            ['CODE','postes','DURÉE',"VALEUR D'INVENTAIRE ou VALEUR DE MARCHÉ",'CONCESSIONAIRE',"VALEUR DÉCLARÉE DANS LE CAHIER DE CHARGES"]
+        ];
+        <?php foreach ($concessions_exist as $bien): ?>
+            data.push([
+                '<?= addslashes($bien['code']) ?>',
+                '<?= addslashes($bien['postes'] ?? '') ?>',
+                '<?= $bien['duree'] ? $bien['duree'] . ' ans' : '-' ?>',
+                <?= $bien['valeur_inventaire'] ?>,
+                '<?= addslashes($bien['concessionnaire_nom'] ?: '') ?>',
+                <?= $bien['valeur_declaree_cahier'] ?>
+            ]);
         <?php endforeach; ?>
-        data.push(['TOTAL',<?= $total_valeur_inventaire ?>,'',<?= $total_valeur_declaree ?>,'','']);
+        data.push(['','TOTAL','',<?= $total_v_inv ?>,'',<?= $total_v_dec ?>]);
         const ws = XLSX.utils.aoa_to_sheet(data);
         XLSX.utils.book_append_sheet(wb, ws, "BIENS_CONCESSION");
         XLSX.writeFile(wb, 'DIMF_2007_<?= $exercice ?>_<?= $type_periode ?>.xlsx');

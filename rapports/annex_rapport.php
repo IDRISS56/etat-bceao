@@ -1,11 +1,15 @@
 <?php
 // ANNEX_RAPP_AN.php - Annexe au rapport annuel
 // Instruction n°018-12-2010 du 29 décembre 2010
-// Version corrigée – export Excel avec json_encode()
+// Version utilisant z_bceao_annexes_rapport (table existante)
 
 session_start();
 require_once '../databases/database.php';
 require_once '../fpdf/fpdf.php';
+
+// ============================================================
+// VÉRIFICATION / ADAPTATION DE LA TABLE
+// ============================================================
 
 // ============================================================
 // PARAMÈTRES
@@ -37,7 +41,7 @@ switch ($type_periode) {
 }
 
 // ============================================================
-// DÉFINITION DES TABLEAUX (indicateurs) – identique à avant
+// DÉFINITION DES TABLEAUX (indicateurs) – identique
 // ============================================================
 $sections = [];
 
@@ -423,72 +427,79 @@ $sections['10.0'] = [
 ];
 
 // ============================================================
-// CRÉATION DE LA TABLE ANNEXE_DATA
-// ============================================================
-try {
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS annexe_data (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            exercice INT NOT NULL,
-            indicateur VARCHAR(30) NOT NULL,
-            valeur_effectif INT DEFAULT 0,
-            valeur_montant DECIMAL(20,2) DEFAULT 0,
-            valeur_text TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_exercice_indicateur (exercice, indicateur)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    ");
-} catch (PDOException $e) { }
-
-// ============================================================
-// SAUVEGARDE DES DONNÉES
+// SAUVEGARDE DES DONNÉES (dans z_bceao_annexes_rapport)
 // ============================================================
 $message = '';
 $message_type = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] == 'save') {
     try {
-        $stmt = $pdo->prepare("
-            INSERT INTO annexe_data (exercice, indicateur, valeur_effectif, valeur_montant, valeur_text)
-            VALUES (:exercice, :indicateur, :effectif, :montant, :text)
-            ON DUPLICATE KEY UPDATE 
-                valeur_effectif = VALUES(valeur_effectif),
+        // Supprimer les anciennes lignes de l'exercice
+        $stmtDel = $pdo->prepare("DELETE FROM z_bceao_annexes_rapport WHERE exercice = :exercice");
+        $stmtDel->execute([':exercice' => $exercice]);
+
+        $stmtIns = $pdo->prepare("
+            INSERT INTO z_bceao_annexes_rapport 
+            (exercice, code_indicateur, valeur_montant, valeur_effectif, valeur_text, statut)
+            VALUES (:exercice, :code, :montant, :effectif, :text, 'actif')
+            ON DUPLICATE KEY UPDATE
                 valeur_montant = VALUES(valeur_montant),
-                valeur_text = VALUES(valeur_text)
+                valeur_effectif = VALUES(valeur_effectif),
+                valeur_text = VALUES(valeur_text),
+                statut = 'actif'
         ");
+
         foreach ($sections as $section_id => $section) {
             foreach ($section['rows'] as $code => $info) {
+                // Ignorer les pourcentages (ils sont calculés)
+                if ($info['type'] == 'pourcentage') continue;
                 $val = isset($_POST[$code]) ? $_POST[$code] : '';
-                $effectif = 0; $montant = 0; $text = '';
-                if ($info['type'] == 'effectif') $effectif = (int)$val;
-                elseif ($info['type'] == 'montant') $montant = (float)str_replace(',', '', $val);
-                elseif ($info['type'] == 'pourcentage') continue;
-                else $text = $val;
-                $stmt->execute([':exercice' => $exercice, ':indicateur' => $code, ':effectif' => $effectif, ':montant' => $montant, ':text' => $text]);
+                $montant = null;
+                $effectif = null;
+                $text = null;
+                if ($info['type'] == 'effectif') {
+                    $effectif = (int)$val;
+                } elseif ($info['type'] == 'montant') {
+                    $montant = (float)str_replace(',', '', $val);
+                } else { // text
+                    $text = $val;
+                }
+                $stmtIns->execute([
+                    ':exercice' => $exercice,
+                    ':code' => $code,
+                    ':montant' => $montant,
+                    ':effectif' => $effectif,
+                    ':text' => $text
+                ]);
             }
         }
-        $message = "Annexe enregistrée avec succès !";
-        $message_type = "success";
+        $_SESSION['flash_message'] = "Annexe enregistrée avec succès !";
+        $_SESSION['flash_type'] = "success";
     } catch (PDOException $e) {
-        $message = "Erreur : " . $e->getMessage();
-        $message_type = "error";
+        $_SESSION['flash_message'] = "Erreur : " . $e->getMessage();
+        $_SESSION['flash_type'] = "error";
     }
+    header("Location: " . strtok($_SERVER["REQUEST_URI"], '?'));
+    exit;
 }
+
+$message = $_SESSION['flash_message'] ?? '';
+$message_type = $_SESSION['flash_type'] ?? '';
+unset($_SESSION['flash_message'], $_SESSION['flash_type']);
 
 // ============================================================
 // RÉCUPÉRATION DES DONNÉES EXISTANTES
 // ============================================================
 $data = [];
 try {
-    $stmt = $pdo->prepare("SELECT * FROM annexe_data WHERE exercice = :exercice");
+    $stmt = $pdo->prepare("SELECT * FROM z_bceao_annexes_rapport WHERE exercice = :exercice AND statut = 'actif'");
     $stmt->execute([':exercice' => $exercice]);
     foreach ($stmt->fetchAll() as $row) {
-        $data[$row['indicateur']] = $row;
+        $data[$row['code_indicateur']] = $row;
     }
 } catch (PDOException $e) { }
 
 // ============================================================
-// CALCUL AUTOMATIQUE (AUTO_VALUES) – identique à avant
+// CALCUL AUTOMATIQUE
 // ============================================================
 $auto_values = [];
 try {
@@ -898,6 +909,7 @@ if ($format === 'pdf') {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
+        /* --- Styles identiques à l'original --- */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: #f1f5f9; padding: 24px; }
         .dashboard { max-width: 1400px; margin: 0 auto; }
@@ -1104,12 +1116,9 @@ if ($format === 'pdf') {
     function exporterExcel() {
         const wb = XLSX.utils.book_new();
         const data = [];
-
-        // En-tête
         data.push(['ANNEXE AU RAPPORT ANNUEL']);
         data.push(['Periode : ' + <?= json_encode($lib_periode) ?>]);
         data.push([]);
-
         <?php
         // Génération des données depuis le flux documentaire avec json_encode
         foreach ($document_flow as $block) {
@@ -1143,7 +1152,6 @@ if ($format === 'pdf') {
             echo "data.push([]);\n";
         }
         ?>
-
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(data), "ANNEXE_RAPPORT");
         XLSX.writeFile(wb, 'ANNEXE_RAPPORT_<?= json_encode($exercice) ?>.xlsx');
     }

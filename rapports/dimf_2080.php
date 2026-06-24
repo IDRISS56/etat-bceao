@@ -1,6 +1,7 @@
 <?php
 // DIMF_2080.php - Compte de résultat (Charges et Produits)
-// FPDF intégré, gestion des filtres par POST, PDF en AJAX (téléchargement direct sans nouvelle page)
+// Version avec PDF en soumission classique (même onglet)
+// Ne crée aucune table, utilise les tables existantes
 
 session_start();
 
@@ -107,7 +108,6 @@ $mois         = isset($_POST['mois'])         ? (int)$_POST['mois']         : (i
 $trimestre    = isset($_POST['trimestre'])    ? (int)$_POST['trimestre']    : (isset($_GET['trimestre']) ? (int)$_GET['trimestre'] : 4);
 $semestre     = isset($_POST['semestre'])     ? (int)$_POST['semestre']     : (isset($_GET['semestre']) ? (int)$_GET['semestre'] : null);
 $format       = isset($_POST['format'])       ? $_POST['format']            : (isset($_GET['format']) ? $_GET['format'] : 'html');
-$ajax         = isset($_POST['ajax'])         ? (bool)$_POST['ajax']        : false;
 
 switch ($type_periode) {
     case 'trimestre': $mois = $trimestre * 3; break;
@@ -202,9 +202,7 @@ $R3Q = getCharges('667%', $date_debut_exercice, $date_fin_periode);
 $R3T = getCharges('668%', $date_debut_exercice, $date_fin_periode);
 $R3A = $R3C + $R3N + $R3Q + $R3T;
 
-// --- Agrégats Z21 et Z22 (placés après R3A) ---
-// Calculés après avoir les produits, on les définit plus tard (après calcul des produits)
-// On les initialise à 0 pour l'instant
+// Agrégats Z21 et Z22 (calculés après avoir les produits)
 $Z21 = 0;
 $Z22 = 0;
 
@@ -265,9 +263,6 @@ $R7B = getCharges('6841%', $date_debut_exercice, $date_fin_periode);
 $R7C = getCharges('6842%', $date_debut_exercice, $date_fin_periode);
 $R7D = getCharges('6843%', $date_debut_exercice, $date_fin_periode);
 $R7A = $R7B + $R7C + $R7D;
-
-// --- Agrégats Z23 à Z28 (placés après R7A) ---
-$Z23 = 0; $Z24 = 0; $Z25 = 0; $Z26 = 0; $Z27 = 0; $Z28 = 0;
 
 // S02
 $S03 = getCharges('621%', $date_debut_exercice, $date_fin_periode);
@@ -391,7 +386,7 @@ $V3R = $V3T;
 $V3X = getProduits('766%', $date_debut_exercice, $date_fin_periode);
 $V3A = $V3B + $V3R + $V3X;
 
-// On peut maintenant calculer Z21 et Z22 (après avoir V08+V3A et R08+R3A)
+// Calcul de Z21 et Z22 (marge d'intérêt bénéficiaire et total charges d'intérêts)
 $Z21 = max(0, ($V08 + $V3A) - ($R08 + $R3A));
 $Z22 = $R08 + $R3A;
 
@@ -506,12 +501,11 @@ $X81 = getProduits('792%', $date_debut_exercice, $date_fin_periode);
 $total_produits = $V08 + $V3A + $V4B + $V5B + $V5G + $V6A + $V6F + $V6U + $V7A
                 + $V8A + $W4A + $W50 + $W53 + $X51 + $X6B + $X80 + $X81;
 
-// Maintenant on peut calculer les agrégats Z23 à Z28
+// Agrégats Z23 à Z28
 $Z23 = max(0, ($V4B + $V5B + $V5G + $V6A + $V6F + $V6U + $V7A) - ($R4B + $R5B + $R5E + $R6A + $R6F + $R6V + $R7A));
 $Z24 = max(0, ($R4B + $R5B + $R5E + $R6A + $R6F + $R6V + $R7A) - ($V4B + $V5B + $V5G + $V6A + $V6F + $V6U + $V7A));
 $Z25 = $Z21;
 $Z26 = max(0, ($V4B + $V5B + $V5G + $V6A + $V6F + $V6U + $V7A) - ($R4B + $R5B + $R5E + $R6A + $R6F + $R6V + $R7A) + $Z21 - $Z22);
-$Z27 = $R8G + $R8J + $R8L;
 $Z28 = $S02 + $S1A + $S2A;
 
 // Agrégats produits
@@ -531,7 +525,7 @@ $resultat_net = $total_produits - $total_charges;
 $resultat_type = ($resultat_net >= 0) ? "EXCEDENT" : "DEFICIT";
 
 // ============================================================
-// GÉNÉRATION PDF (si format=pdf)
+// GÉNÉRATION PDF (format=pdf) – version classique
 // ============================================================
 if ($format === 'pdf') {
     if (ob_get_length()) ob_end_clean();
@@ -585,7 +579,7 @@ if ($format === 'pdf') {
     $pdf->TableRow($cols, ['R3Q','Autres intérêts',PDF_DIMF::montant($R3Q)]);
     $pdf->TableRow($cols, ['R3T','Commissions',PDF_DIMF::montant($R3T)]);
 
-    // Agrégats Z21 et Z22 (placés immédiatement après R3A)
+    // Agrégats Z21 et Z22
     $pdf->TableRow($cols, ['Z21','MARGE D\'INTÉRÊT BÉNÉFICIAIRE',PDF_DIMF::montant($Z21)],'subtotal');
     $pdf->TableRow($cols, ['Z22','TOTAL CHARGES D\'INTÉRÊTS',PDF_DIMF::montant($Z22)]);
 
@@ -644,7 +638,7 @@ if ($format === 'pdf') {
     $pdf->TableRow($cols, ['R7C','Transferts de produits d\'exploitation financière',PDF_DIMF::montant($R7C)]);
     $pdf->TableRow($cols, ['R7D','Diverses charges d\'exploitation financière',PDF_DIMF::montant($R7D)]);
 
-    // Agrégats Z23 à Z28 (placés après R7A)
+    // Agrégats Z23 à Z28
     $pdf->TableRow($cols, ['Z23','AUTRES PRODUITS FINANCIERS NETS',PDF_DIMF::montant($Z23)],'subtotal');
     $pdf->TableRow($cols, ['Z24','AUTRES CHARGES FINANCIÈRES NETTES',PDF_DIMF::montant($Z24)]);
     $pdf->TableRow($cols, ['Z25','MARGE D\'INTÉRÊT BÉNÉFICIAIRE (idem)',PDF_DIMF::montant($Z25)]);
@@ -889,18 +883,13 @@ if ($format === 'pdf') {
     $pdf->Cell(0,8,PDF_DIMF::u(number_format(abs($resultat_net),0,',',' ').' FCFA ('.$resultat_type.')'),0,1,'C');
     $pdf->SetTextColor(0,0,0);
 
-    // Sortie du PDF : téléchargement direct (D) ou affichage (I) selon que la requête est AJAX ou non
-    // Ici, on utilise D pour forcer le téléchargement (comportement attendu avec AJAX)
-    if ($ajax) {
-        $pdf->Output('D', 'DIMF_2080_CompteResultat_'.$exercice.'_'.$type_periode.'.pdf');
-    } else {
-        $pdf->Output('I', 'DIMF_2080_CompteResultat_'.$exercice.'_'.$type_periode.'.pdf');
-    }
+    // Sortie : affichage dans le navigateur (I) – même fenêtre
+    $pdf->Output('I', 'DIMF_2080_CompteResultat_'.$exercice.'_'.$type_periode.'.pdf');
     exit;
 }
 
 // ============================================================
-// EXPORT EXCEL (format=excel) – simplifié
+// EXPORT EXCEL (format=excel)
 // ============================================================
 if ($format === 'excel') {
     header('Content-Type: application/vnd.ms-excel');
@@ -913,14 +902,12 @@ if ($format === 'excel') {
     echo '<table><tr><th>CODE</th><th>LIBELLÉ</th><th class="text-right">Montant</th></tr>';
     echo '<tr><td>R08</td><td>Charges sur opérations avec IF</td><td class="text-right">'.number_format($R08,0,',',' ').'</td></tr>';
     echo '<tr><td>R3A</td><td>Charges sur opérations avec membres</td><td class="text-right">'.number_format($R3A,0,',',' ').'</td></tr>';
-    // ... (on peut ajouter d'autres lignes si besoin, mais on garde l'essentiel)
     echo '<tr style="background:#e8f5e9;"><td colspan="2"><strong>TOTAL CHARGES</strong></td><td class="text-right"><strong>'.number_format($total_charges,0,',',' ').'</strong></td></tr>';
     echo '</table><br/>';
     echo '<h3>PRODUITS</h3>';
     echo '<table><tr><th>CODE</th><th>LIBELLÉ</th><th class="text-right">Montant</th></tr>';
     echo '<tr><td>V08</td><td>Produits sur opérations avec IF</td><td class="text-right">'.number_format($V08,0,',',' ').'</td></tr>';
     echo '<tr><td>V3A</td><td>Produits sur opérations avec membres</td><td class="text-right">'.number_format($V3A,0,',',' ').'</td></tr>';
-    // ...
     echo '<tr style="background:#e8f5e9;"><td colspan="2"><strong>TOTAL PRODUITS</strong></td><td class="text-right"><strong>'.number_format($total_produits,0,',',' ').'</strong></td></tr>';
     echo '</table><br/>';
     echo '<h3>Résultat</h3>';
@@ -976,7 +963,7 @@ if ($format === 'excel') {
         .deficit { color:#dc2626; font-size:2rem; font-weight:700; }
         .page-footer { text-align:center; font-size:0.75rem; color:#6b7280; margin-top:16px; padding:16px; }
         @media (max-width:768px) { body { padding:12px; } .filters-row { flex-direction:column; } .btn-group { flex-wrap:wrap; } }
-        @media print { .btn-group, .page-footer, .filters-row, #filtersCard { display:none !important; } }
+        @media print { .btn-group, .page-footer, .filters-row, #filtersCard { display:none; } }
     </style>
 </head>
 <body>
@@ -1087,7 +1074,7 @@ if ($format === 'excel') {
                             <tr><td>R3Q</td><td>Autres intérêts</td><td class="text-right"><?= number_format($R3Q,0,',',' ') ?></td></tr>
                             <tr><td>R3T</td><td>Commissions</td><td class="text-right"><?= number_format($R3T,0,',',' ') ?></td></tr>
 
-                            <!-- Agrégats Z21 et Z22 (placés juste après R3A) -->
+                            <!-- Agrégats Z21 et Z22 -->
                             <tr class="subtotal-row"><td colspan="2">Z21 - MARGE D'INTÉRÊT BÉNÉFICIAIRE</td><td class="text-right"><?= number_format($Z21,0,',',' ') ?></td></tr>
                             <tr><td colspan="2">Z22 - TOTAL CHARGES D'INTÉRÊTS</td><td class="text-right"><?= number_format($Z22,0,',',' ') ?></td></tr>
 
@@ -1146,7 +1133,7 @@ if ($format === 'excel') {
                             <tr><td>R7C</td><td>Transferts de produits d'exploitation financière</td><td class="text-right"><?= number_format($R7C,0,',',' ') ?></td></tr>
                             <tr><td>R7D</td><td>Diverses charges d'exploitation financière</td><td class="text-right"><?= number_format($R7D,0,',',' ') ?></td></tr>
 
-                            <!-- Agrégats Z23 à Z28 (placés après R7A) -->
+                            <!-- Agrégats Z23 à Z28 -->
                             <tr class="subtotal-row"><td colspan="2">Z23 - AUTRES PRODUITS FINANCIERS NETS</td><td class="text-right"><?= number_format($Z23,0,',',' ') ?></td></tr>
                             <tr><td colspan="2">Z24 - AUTRES CHARGES FINANCIÈRES NETTES</td><td class="text-right"><?= number_format($Z24,0,',',' ') ?></td></tr>
                             <tr><td colspan="2">Z25 - MARGE D'INTÉRÊT BÉNÉFICIAIRE (idem)</td><td class="text-right"><?= number_format($Z25,0,',',' ') ?></td></tr>
@@ -1434,32 +1421,20 @@ if ($format === 'excel') {
         container.innerHTML = html;
     }
 
-    // Exporter PDF avec AJAX (téléchargement direct sans nouvelle page)
-    async function exporterPDF() {
+    // PDF : soumission classique comme dans dimf_2900.php
+    function exporterPDF() {
         const form = document.getElementById('filtersForm');
-        const formData = new FormData(form);
-        formData.append('format', 'pdf');
-        formData.append('ajax', '1');
-        try {
-            const response = await fetch(window.location.href, {
-                method: 'POST',
-                body: formData
-            });
-            if (!response.ok) throw new Error('Erreur réseau');
-            const blob = await response.blob();
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = 'DIMF_2080_CompteResultat_<?= $exercice ?>_<?= $type_periode ?>.pdf';
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            URL.revokeObjectURL(link.href);
-        } catch (e) {
-            alert('Erreur lors de la génération du PDF : ' + e.message);
-        }
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'format';
+        input.value = 'pdf';
+        form.appendChild(input);
+        // Soumission dans la même fenêtre (pas de target)
+        form.submit();
+        form.removeChild(input);
     }
 
-    // Exporter Excel (téléchargement direct)
+    // Excel : soumission classique
     function exporterExcel() {
         const form = document.getElementById('filtersForm');
         const input = document.createElement('input');

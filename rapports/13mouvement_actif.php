@@ -1,10 +1,12 @@
 <?php
 // 13-MouvementsActifs.php - Acquisitions et cessions d'actifs
-// Version alignée sur le fichier 13.xlsx (uniquement le tableau des mouvements)
+// Version utilisant les tables existantes (ecritures_comptables, plan_comptables)
 
 session_start();
 
-// Configuration BDD
+// ============================================================
+// CONFIGURATION BDD
+// ============================================================
 require_once '../databases/database.php';
 require_once '../fpdf/fpdf.php';
 
@@ -82,7 +84,7 @@ foreach ($categories as $key => $category) {
         $stmtOuverture->execute([':compte' => $compte . '%', ':date_debut' => $date_debut_exercice]);
         $data[$key]['montant_ouverture'] += (float)$stmtOuverture->fetch()['solde'];
         
-        // Acquisitions
+        // Acquisitions (débits)
         $stmtAcquisitions = $pdo->prepare("
             SELECT COALESCE(SUM(e.montant_debit), 0) as total
             FROM ecritures_comptables e
@@ -91,7 +93,7 @@ foreach ($categories as $key => $category) {
         $stmtAcquisitions->execute([':compte' => $compte . '%', ':date_debut' => $date_debut_exercice, ':date_fin' => $date_fin_exercice]);
         $data[$key]['acquisitions'] += (float)$stmtAcquisitions->fetch()['total'];
         
-        // Cessions
+        // Cessions (crédits)
         $stmtCessions = $pdo->prepare("
             SELECT COALESCE(SUM(e.montant_credit), 0) as total
             FROM ecritures_comptables e
@@ -416,7 +418,7 @@ if ($format === 'pdf') {
     </div>
 
     <div class="footer">
-        <i class="fas fa-calendar-alt"></i> Document genere le <?= date('d/m/Y a H:i:s') ?> - Donnees extraites de la base Mandigo<br>
+        <i class="fas fa-calendar-alt"></i> Document genere le <?= date('d/m/Y a H:i:s') ?> - Donnees extraites de la base<br>
         Exercice : <?= $exercice ?> - Periode : <?= $lib_periode ?>
     </div>
 </div>

@@ -1,6 +1,6 @@
 <?php
 // DIMF_2011.php - Informations annexes
-// FPDF intégré, gestion POST, Bootstrap, correction mb_convert_encoding
+// Utilise la table z_bceao_infos_annexes (existe déjà)
 
 session_start();
 
@@ -9,6 +9,7 @@ session_start();
 // ============================================================
 require_once '../databases/database.php';
 require_once '../fpdf/fpdf.php';
+
 
 class PDF_DIMF extends FPDF {
     public $codeDimf  = 'DIMF';
@@ -76,6 +77,7 @@ class PDF_DIMF extends FPDF {
     }
 
     function TableRow($cols, $data, $style = '') {
+        $fill = false;
         switch ($style) {
             case 'subtotal':
                 $this->SetFillColor(248, 250, 252);
@@ -94,7 +96,7 @@ class PDF_DIMF extends FPDF {
         $this->SetDrawColor(226, 232, 240);
         $this->SetLineWidth(0.1);
         foreach ($cols as $i => $col) {
-            $val   = isset($data[$i]) ? $data[$i] : '';
+            $val = isset($data[$i]) ? $data[$i] : '';
             $align = isset($col['align']) ? $col['align'] : 'L';
             $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
         }
@@ -107,7 +109,7 @@ class PDF_DIMF extends FPDF {
 }
 
 // ============================================================
-// PARAMÈTRES (priorité POST > GET > défaut)
+// PARAMÈTRES
 // ============================================================
 $exercice     = isset($_POST['exercice'])     ? (int)$_POST['exercice']     : (isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y'));
 $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode']      : (isset($_GET['type_periode']) ? $_GET['type_periode'] : 'mensuel');
@@ -124,55 +126,49 @@ switch ($type_periode) {
 $date_fin_periode = date('Y-m-t', strtotime($exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01'));
 
 // ============================================================
-// TRAITEMENT DU FORMULAIRE (POST)
+// TRAITEMENT POST (SAUVEGARDE)
 // ============================================================
 $message = '';
 $message_type = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] == 'save') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save') {
     try {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS infos_annexes (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            exercice INT NOT NULL,
-            code_indicateur VARCHAR(20) NOT NULL,
-            valeur_montant DECIMAL(15,2) DEFAULT NULL,
-            valeur_effectif INT DEFAULT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_exercice_indicateur (exercice, code_indicateur)
-        )");
-
-        $stmtDel = $pdo->prepare("DELETE FROM infos_annexes WHERE exercice = :exercice");
+        // Supprimer les anciennes données pour l'exercice
+        $stmtDel = $pdo->prepare("DELETE FROM z_bceao_infos_annexes WHERE exercice = :exercice");
         $stmtDel->execute([':exercice' => $exercice]);
 
-        $stmtIns = $pdo->prepare("INSERT INTO infos_annexes (exercice, code_indicateur, valeur_montant, valeur_effectif) VALUES (:exercice, :code, :montant, :effectif)");
-
+        // Définition des indicateurs avec leur type
         $indicateurs = [
-            'ZC01' => ['type' => 'montant', 'poste' => 'encours_engagements_ct'],
-            'ZC02' => ['type' => 'montant', 'poste' => 'encours_engagements_mlt'],
-            'ZC03' => ['type' => 'montant', 'poste' => 'montant_autres_activites'],
-            'ZC04' => ['type' => 'effectif', 'poste' => 'nb_membres_total'],
-            'ZC05' => ['type' => 'effectif', 'poste' => 'nb_groupements'],
-            'ZC06' => ['type' => 'effectif', 'poste' => 'nb_membres_hommes'],
-            'ZC07' => ['type' => 'effectif', 'poste' => 'nb_membres_femmes'],
-            'ZC08' => ['type' => 'effectif', 'poste' => 'nb_groupements_beneficiaires'],
-            'ZC09' => ['type' => 'effectif', 'poste' => 'nb_usagers_beneficiaires'],
-            'ZC10' => ['type' => 'effectif', 'poste' => 'nb_societaires_beneficiaires'],
-            'ZC11' => ['type' => 'effectif', 'poste' => 'population_cible'],
-            'ZC12' => ['type' => 'montant', 'poste' => 'depots_plus_1_an_inst_fin'],
-            'ZC13' => ['type' => 'montant', 'poste' => 'depots_terme_plus_1_an_membres'],
-            'ZC14' => ['type' => 'montant', 'poste' => 'epargne_regime_special'],
-            'ZC15' => ['type' => 'montant', 'poste' => 'autres_depots_plus_1_an_membres'],
-            'ZC16' => ['type' => 'montant', 'poste' => 'recouvrements_prevus'],
-            'ZC17' => ['type' => 'montant', 'poste' => 'recouvrements_attendus']
+            'ZC01' => ['type' => 'montant', 'poste' => 'zc01'],
+            'ZC02' => ['type' => 'montant', 'poste' => 'zc02'],
+            'ZC03' => ['type' => 'montant', 'poste' => 'zc03'],
+            'ZC04' => ['type' => 'effectif', 'poste' => 'zc04'],
+            'ZC05' => ['type' => 'effectif', 'poste' => 'zc05'],
+            'ZC06' => ['type' => 'effectif', 'poste' => 'zc06'],
+            'ZC07' => ['type' => 'effectif', 'poste' => 'zc07'],
+            'ZC08' => ['type' => 'effectif', 'poste' => 'zc08'],
+            'ZC09' => ['type' => 'effectif', 'poste' => 'zc09'],
+            'ZC10' => ['type' => 'effectif', 'poste' => 'zc10'],
+            'ZC11' => ['type' => 'effectif', 'poste' => 'zc11'],
+            'ZC12' => ['type' => 'montant', 'poste' => 'zc12'],
+            'ZC13' => ['type' => 'montant', 'poste' => 'zc13'],
+            'ZC14' => ['type' => 'montant', 'poste' => 'zc14'],
+            'ZC15' => ['type' => 'montant', 'poste' => 'zc15'],
+            'ZC16' => ['type' => 'montant', 'poste' => 'zc16'],
+            'ZC17' => ['type' => 'montant', 'poste' => 'zc17']
         ];
 
+        $stmtIns = $pdo->prepare("INSERT INTO z_bceao_infos_annexes 
+            (exercice, code_indicateur, valeur_montant, valeur_effectif, statut) 
+            VALUES (:exercice, :code, :montant, :effectif, 'actif')");
+
         foreach ($indicateurs as $code => $info) {
-            if ($info['type'] == 'montant') {
-                $valeur_montant = (float)($_POST[$info['poste']] ?? 0);
+            $val = isset($_POST[$info['poste']]) ? trim($_POST[$info['poste']]) : '';
+            if ($info['type'] === 'montant') {
+                $valeur_montant = (float) str_replace([' ', ','], ['', '.'], $val);
                 $valeur_effectif = null;
             } else {
                 $valeur_montant = null;
-                $valeur_effectif = (int)($_POST[$info['poste']] ?? 0);
+                $valeur_effectif = (int) $val;
             }
             $stmtIns->execute([
                 ':exercice' => $exercice,
@@ -181,12 +177,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 ':effectif' => $valeur_effectif
             ]);
         }
-        $message = "Informations annexes enregistrées !";
+        $message = "Informations annexes enregistrées avec succès !";
         $message_type = "success";
     } catch (PDOException $e) {
         $message = "Erreur : " . $e->getMessage();
         $message_type = "error";
     }
+    // Redirection pour éviter la resoumission
     $url = "DIMF_2011.php?exercice=$exercice&type_periode=$type_periode" .
            ($type_periode=='mensuel' ? "&mois=$mois" : ($type_periode=='trimestre' ? "&trimestre=$trimestre" : ($type_periode=='semestre' ? "&semestre=$semestre" : ""))) .
            "&msg=" . urlencode($message) . "&msg_type=$message_type";
@@ -203,14 +200,16 @@ if (isset($_GET['msg'])) {
 // ============================================================
 $infos = [];
 try {
-    $stmt = $pdo->prepare("SELECT * FROM infos_annexes WHERE exercice = :exercice");
+    $stmt = $pdo->prepare("SELECT * FROM z_bceao_infos_annexes WHERE exercice = :exercice AND statut = 'actif'");
     $stmt->execute([':exercice' => $exercice]);
     foreach ($stmt->fetchAll() as $row) {
         $infos[$row['code_indicateur']] = $row;
     }
 } catch (PDOException $e) {}
 
-// Données calculées automatiquement
+// ============================================================
+// VALEURS CALCULÉES AUTOMATIQUEMENT (pour pré-remplir)
+// ============================================================
 $donnees_calculees = [
     'nb_membres_total' => 0,
     'nb_membres_hommes' => 0,
@@ -219,28 +218,40 @@ $donnees_calculees = [
     'epargne_regime_special' => 0
 ];
 try {
+    // ZC04 : nombre total de clients actifs
     $stmt = $pdo->prepare("SELECT COUNT(*) as total FROM clients WHERE statut = 'actif'");
     $stmt->execute();
     $donnees_calculees['nb_membres_total'] = (int)$stmt->fetch()['total'];
 } catch (PDOException $e) {}
 try {
-    $stmt = $pdo->prepare("SELECT SUM(CASE WHEN genre = 'Masculin' THEN 1 ELSE 0 END) as hommes, SUM(CASE WHEN genre = 'Feminin' THEN 1 ELSE 0 END) as femmes FROM clients WHERE statut = 'actif'");
+    // ZC06 et ZC07 : genre des clients
+    $stmt = $pdo->prepare("SELECT 
+        SUM(CASE WHEN genre = 'Masculin' THEN 1 ELSE 0 END) as hommes, 
+        SUM(CASE WHEN genre = 'Feminin' THEN 1 ELSE 0 END) as femmes 
+        FROM clients WHERE statut = 'actif'");
     $stmt->execute();
     $r = $stmt->fetch();
     $donnees_calculees['nb_membres_hommes'] = (int)$r['hommes'];
     $donnees_calculees['nb_membres_femmes'] = (int)$r['femmes'];
 } catch (PDOException $e) {}
 try {
+    // ZC13 : dépôts à terme > 1 an (comptes DAT en cours)
     $stmt = $pdo->prepare("SELECT COALESCE(SUM(capital_initial), 0) as total FROM comptes_dat WHERE statut = 'en cours'");
     $stmt->execute();
     $donnees_calculees['depots_terme_plus_1_an_membres'] = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) {}
 try {
-    $stmt = $pdo->prepare("SELECT COALESCE(SUM(c.solde), 0) as total FROM comptes c INNER JOIN produits p ON c.produit_id = p.produit_id INNER JOIN produits_familles pf ON p.famille_id = pf.famille_id WHERE pf.categorie = 'Epargne' AND c.statut = 'actif' AND c.solde > 0");
+    // ZC14 : épargne régime spécial (comptes épargne actifs)
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(c.solde), 0) as total 
+        FROM comptes c 
+        INNER JOIN produits p ON c.produit_id = p.produit_id 
+        INNER JOIN produits_familles pf ON p.famille_id = pf.famille_id 
+        WHERE pf.categorie = 'Epargne' AND c.statut = 'actif' AND c.solde > 0");
     $stmt->execute();
     $donnees_calculees['epargne_regime_special'] = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) {}
 
+// Fonction utilitaire pour récupérer la valeur affichée
 function getValeur($infos, $code, $type, $calcule = null) {
     if (isset($infos[$code])) {
         return $type === 'montant' ? (float)$infos[$code]['valeur_montant'] : (int)$infos[$code]['valeur_effectif'];
@@ -249,7 +260,30 @@ function getValeur($infos, $code, $type, $calcule = null) {
 }
 
 // ============================================================
-// GÉNÉRATION PDF (si format=pdf)
+// DÉFINITION DES INDICATEURS POUR L'AFFICHAGE
+// ============================================================
+$liste_indicateurs = [
+    ['code' => 'ZC01', 'libelle' => 'Encours des engagements par signature à court terme', 'type' => 'montant', 'calcule' => null],
+    ['code' => 'ZC02', 'libelle' => 'Encours des engagements par signature à moyen et long termes', 'type' => 'montant', 'calcule' => null],
+    ['code' => 'ZC03', 'libelle' => 'Montant total consacré par l\'institution aux opérations autre que les activités d\'épargne et de crédit', 'type' => 'montant', 'calcule' => null],
+    ['code' => 'ZC04', 'libelle' => 'Nombre total de membres, bénéficiaires ou clients de l\'institution', 'type' => 'effectif', 'calcule' => 'nb_membres_total'],
+    ['code' => 'ZC05', 'libelle' => 'Nombre total de groupements de l\'institution ainsi que de leur membres', 'type' => 'effectif', 'calcule' => null],
+    ['code' => 'ZC06', 'libelle' => 'Nombre total de membres, bénéficiaires ou clients de sexe masculin de l\'institution', 'type' => 'effectif', 'calcule' => 'nb_membres_hommes'],
+    ['code' => 'ZC07', 'libelle' => 'Nombre total de membres, bénéficiaires ou clients de sexe féminin de l\'institution', 'type' => 'effectif', 'calcule' => 'nb_membres_femmes'],
+    ['code' => 'ZC08', 'libelle' => 'Nombre total de groupements bénéficiaires', 'type' => 'effectif', 'calcule' => null],
+    ['code' => 'ZC09', 'libelle' => 'Nombre total d\'usagers bénéficiaires', 'type' => 'effectif', 'calcule' => null],
+    ['code' => 'ZC10', 'libelle' => 'Nombre total de sociétaires bénéficiaires', 'type' => 'effectif', 'calcule' => null],
+    ['code' => 'ZC11', 'libelle' => 'Population cible de la caisse (ou son estimation)', 'type' => 'effectif', 'calcule' => null],
+    ['code' => 'ZC12', 'libelle' => '126-127-128 Dépôts à plus d\'un an du SFD auprès des institutions financières', 'type' => 'montant', 'calcule' => null],
+    ['code' => 'ZC13', 'libelle' => '252- Dépôts à terme à plus d\'un an des membres, bénéficiaires ou clients auprès de la caisse', 'type' => 'montant', 'calcule' => 'depots_terme_plus_1_an_membres'],
+    ['code' => 'ZC14', 'libelle' => '253-Comptes d\'épargne à régime spécial', 'type' => 'montant', 'calcule' => 'epargne_regime_special'],
+    ['code' => 'ZC15', 'libelle' => '254-255- Autres dépôts à plus d\'un an des membres, bénéficiaires ou clients auprès de la caisse', 'type' => 'montant', 'calcule' => null],
+    ['code' => 'ZC16', 'libelle' => 'Recouvrements sur prêts intervenus au cours de l\'exercice', 'type' => 'montant', 'calcule' => null],
+    ['code' => 'ZC17', 'libelle' => 'Recouvrements sur prêts attendus au cours de l\'exercice', 'type' => 'montant', 'calcule' => null]
+];
+
+// ============================================================
+// GÉNÉRATION PDF
 // ============================================================
 $format = isset($_POST['format']) ? $_POST['format'] : (isset($_GET['format']) ? $_GET['format'] : 'html');
 
@@ -272,36 +306,30 @@ if ($format === 'pdf') {
     $pdf->SetAutoPageBreak(true, 14);
     $pdf->AddPage();
 
-    $cols = [['label' => 'Code', 'w' => 20], ['label' => 'Indicateur', 'w' => 120], ['label' => 'Valeur', 'w' => 45, 'align' => 'R']];
+    $cols = [
+        ['label' => 'CODE', 'w' => 20],
+        ['label' => 'LIBELLÉS', 'w' => 120],
+        ['label' => 'VALEUR', 'w' => 45, 'align' => 'R']
+    ];
     $pdf->SectionTitle('Informations annexes');
     $pdf->TableHeader($cols);
 
-    $liste = [
-        ['ZC01','Encours engagements CT', getValeur($infos,'ZC01','montant')],
-        ['ZC02','Encours engagements MLT', getValeur($infos,'ZC02','montant')],
-        ['ZC03','Autres activités', getValeur($infos,'ZC03','montant')],
-        ['ZC04','Nb membres total', getValeur($infos,'ZC04','effectif', $donnees_calculees['nb_membres_total'])],
-        ['ZC05','Nb groupements', getValeur($infos,'ZC05','effectif')],
-        ['ZC06','Nb hommes', getValeur($infos,'ZC06','effectif', $donnees_calculees['nb_membres_hommes'])],
-        ['ZC07','Nb femmes', getValeur($infos,'ZC07','effectif', $donnees_calculees['nb_membres_femmes'])],
-        ['ZC08','Nb groupements bénéf.', getValeur($infos,'ZC08','effectif')],
-        ['ZC09','Nb usagers bénéf.', getValeur($infos,'ZC09','effectif')],
-        ['ZC10','Nb sociétaires bénéf.', getValeur($infos,'ZC10','effectif')],
-        ['ZC11','Population cible', getValeur($infos,'ZC11','effectif')],
-        ['ZC12','Dépôts >1 an inst. fin.', getValeur($infos,'ZC12','montant')],
-        ['ZC13','Dépôts terme >1 an membres', getValeur($infos,'ZC13','montant', $donnees_calculees['depots_terme_plus_1_an_membres'])],
-        ['ZC14','Épargne régime spécial', getValeur($infos,'ZC14','montant', $donnees_calculees['epargne_regime_special'])],
-        ['ZC15','Autres dépôts >1 an membres', getValeur($infos,'ZC15','montant')],
-        ['ZC16','Recouvrements intervenus', getValeur($infos,'ZC16','montant')],
-        ['ZC17','Recouvrements attendus', getValeur($infos,'ZC17','montant')]
-    ];
-
-    foreach ($liste as $l) {
-        $pdf->TableRow($cols, [$l[0], $l[1], is_float($l[2]) ? PDF_DIMF::montant($l[2]) : $l[2]]);
+    foreach ($liste_indicateurs as $ind) {
+        $code = $ind['code'];
+        $libelle = $ind['libelle'];
+        $type = $ind['type'];
+        $calcule_key = $ind['calcule'];
+        $valeur = getValeur($infos, $code, $type, $calcule_key ? $donnees_calculees[$calcule_key] : null);
+        $affichage = ($type === 'montant') ? PDF_DIMF::montant($valeur) : $valeur;
+        $pdf->TableRow($cols, [$code, $libelle, $affichage]);
     }
     $pdf->Output('I', 'DIMF_2011_InfosAnnexes_' . $exercice . '_' . $type_periode . '.pdf');
     exit;
 }
+
+// ============================================================
+// AFFICHAGE HTML
+// ============================================================
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -330,10 +358,18 @@ if ($format === 'pdf') {
         .filter-item label { font-size:0.7rem; font-weight:600; text-transform:uppercase; color:#4b5563; }
         .filter-item select, .filter-item input { border:1px solid #d1d5db; border-radius:12px; padding:8px 14px; font-size:0.85rem; }
         .btn-apply { background:#3b82f6; color:white; border:none; border-radius:40px; padding:8px 24px; cursor:pointer; }
+        .table-wrapper { overflow-x:auto; }
+        table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+        th { text-align:left; padding:12px 16px; background:#f8fafc; border-bottom:1px solid #e2e8f0; }
+        td { padding:10px 16px; border-bottom:1px solid #f1f5f9; }
+        .text-right { text-align:right; font-family:monospace; font-weight:500; }
         .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px 20px; border-radius:16px; display:flex; align-items:center; gap:14px; }
-        .calculated-value { background-color:#f0fdf4; }
         .page-footer { text-align:center; font-size:0.75rem; color:#6b7280; margin-top:16px; }
         @media print { .btn-group, .page-footer, #filtersCard { display:none; } }
+        .auto-value { background-color:#f0fdf4; }
+        .input-group { display:flex; align-items:center; gap:8px; }
+        .input-group input { flex:1; }
+        .auto-badge { font-size:0.65rem; color:#16a34a; }
     </style>
 </head>
 <body>
@@ -399,98 +435,97 @@ if ($format === 'pdf') {
         </div>
     <?php endif; ?>
 
+    <!-- ===== TABLEAU DE SAISIE ===== -->
     <div class="card">
-        <div class="card-header"><i class="fas fa-chart-line"></i> INFORMATIONS GÉNÉRALES</div>
+        <div class="card-header"><i class="fas fa-edit"></i> SAISIE DES INFORMATIONS ANNEXES</div>
         <form method="post">
             <input type="hidden" name="action" value="save">
-            <div class="filters-row" style="margin-bottom:0;">
-                <div class="filter-item">
-                    <label>ZC01 - Engagements CT (FCFA)</label>
-                    <input type="number" name="encours_engagements_ct" value="<?= number_format(getValeur($infos,'ZC01','montant'),0,'','') ?>">
-                </div>
-                <div class="filter-item">
-                    <label>ZC02 - Engagements MLT (FCFA)</label>
-                    <input type="number" name="encours_engagements_mlt" value="<?= number_format(getValeur($infos,'ZC02','montant'),0,'','') ?>">
-                </div>
-                <div class="filter-item">
-                    <label>ZC03 - Autres activités (FCFA)</label>
-                    <input type="number" name="montant_autres_activites" value="<?= number_format(getValeur($infos,'ZC03','montant'),0,'','') ?>">
-                </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:80px;">CODE</th>
+                            <th>LIBELLÉS</th>
+                            <th style="width:200px;">VALEUR</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($liste_indicateurs as $ind): 
+                            $code = $ind['code'];
+                            $libelle = $ind['libelle'];
+                            $type = $ind['type'];
+                            $calcule_key = $ind['calcule'];
+                            $valeur = getValeur($infos, $code, $type, $calcule_key ? $donnees_calculees[$calcule_key] : null);
+                            $is_auto = ($calcule_key !== null && !isset($infos[$code]));
+                            $input_name = $ind['code'] === 'ZC01' ? 'zc01' : 
+                                          ($ind['code'] === 'ZC02' ? 'zc02' : 
+                                          ($ind['code'] === 'ZC03' ? 'zc03' : 
+                                          ($ind['code'] === 'ZC04' ? 'zc04' : 
+                                          ($ind['code'] === 'ZC05' ? 'zc05' : 
+                                          ($ind['code'] === 'ZC06' ? 'zc06' : 
+                                          ($ind['code'] === 'ZC07' ? 'zc07' : 
+                                          ($ind['code'] === 'ZC08' ? 'zc08' : 
+                                          ($ind['code'] === 'ZC09' ? 'zc09' : 
+                                          ($ind['code'] === 'ZC10' ? 'zc10' : 
+                                          ($ind['code'] === 'ZC11' ? 'zc11' : 
+                                          ($ind['code'] === 'ZC12' ? 'zc12' : 
+                                          ($ind['code'] === 'ZC13' ? 'zc13' : 
+                                          ($ind['code'] === 'ZC14' ? 'zc14' : 
+                                          ($ind['code'] === 'ZC15' ? 'zc15' : 
+                                          ($ind['code'] === 'ZC16' ? 'zc16' : 'zc17')))))))))))))));
+                        ?>
+                        <tr>
+                            <td><strong><?= $code ?></strong></td>
+                            <td><?= htmlspecialchars($libelle) ?></td>
+                            <td>
+                                <div class="input-group">
+                                    <input type="text" name="<?= $input_name ?>" value="<?= $type === 'montant' ? number_format($valeur,0,',',' ') : $valeur ?>" class="form-control form-control-sm <?= $is_auto ? 'auto-value' : '' ?>">
+                                    <?php if ($is_auto): ?>
+                                        <span class="auto-badge"><i class="fas fa-calculator"></i> auto</span>
+                                    <?php endif; ?>
+                                </div>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
             </div>
-            <div class="card-header" style="margin-top:16px;"><i class="fas fa-users"></i> EFFECTIFS</div>
-            <div class="filters-row" style="margin-bottom:0;">
-                <div class="filter-item">
-                    <label>ZC04 - Nb membres total</label>
-                    <input type="number" name="nb_membres_total" value="<?= getValeur($infos,'ZC04','effectif', $donnees_calculees['nb_membres_total']) ?>" class="<?= !isset($infos['ZC04'])?'calculated-value':'' ?>">
-                    <span style="font-size:0.7rem;"> ✓ auto: <?= number_format($donnees_calculees['nb_membres_total']) ?></span>
-                </div>
-                <div class="filter-item">
-                    <label>ZC05 - Nb groupements</label>
-                    <input type="number" name="nb_groupements" value="<?= getValeur($infos,'ZC05','effectif') ?>">
-                </div>
-                <div class="filter-item">
-                    <label>ZC06 - Nb hommes</label>
-                    <input type="number" name="nb_membres_hommes" value="<?= getValeur($infos,'ZC06','effectif', $donnees_calculees['nb_membres_hommes']) ?>" class="<?= !isset($infos['ZC06'])?'calculated-value':'' ?>">
-                    <span style="font-size:0.7rem;"> ✓ auto: <?= number_format($donnees_calculees['nb_membres_hommes']) ?></span>
-                </div>
-                <div class="filter-item">
-                    <label>ZC07 - Nb femmes</label>
-                    <input type="number" name="nb_membres_femmes" value="<?= getValeur($infos,'ZC07','effectif', $donnees_calculees['nb_membres_femmes']) ?>" class="<?= !isset($infos['ZC07'])?'calculated-value':'' ?>">
-                    <span style="font-size:0.7rem;"> ✓ auto: <?= number_format($donnees_calculees['nb_membres_femmes']) ?></span>
-                </div>
-                <div class="filter-item">
-                    <label>ZC08 - Nb groupements bénéf.</label>
-                    <input type="number" name="nb_groupements_beneficiaires" value="<?= getValeur($infos,'ZC08','effectif') ?>">
-                </div>
-                <div class="filter-item">
-                    <label>ZC09 - Nb usagers bénéf.</label>
-                    <input type="number" name="nb_usagers_beneficiaires" value="<?= getValeur($infos,'ZC09','effectif') ?>">
-                </div>
-                <div class="filter-item">
-                    <label>ZC10 - Nb sociétaires bénéf.</label>
-                    <input type="number" name="nb_societaires_beneficiaires" value="<?= getValeur($infos,'ZC10','effectif') ?>">
-                </div>
-                <div class="filter-item">
-                    <label>ZC11 - Population cible</label>
-                    <input type="number" name="population_cible" value="<?= getValeur($infos,'ZC11','effectif') ?>">
-                </div>
-            </div>
-            <div class="card-header" style="margin-top:16px;"><i class="fas fa-piggy-bank"></i> DÉPÔTS ET ÉPARGNE</div>
-            <div class="filters-row" style="margin-bottom:0;">
-                <div class="filter-item">
-                    <label>ZC12 - Dépôts >1 an inst. fin. (FCFA)</label>
-                    <input type="number" name="depots_plus_1_an_inst_fin" value="<?= number_format(getValeur($infos,'ZC12','montant'),0,'','') ?>">
-                </div>
-                <div class="filter-item">
-                    <label>ZC13 - Dépôts terme >1 an membres</label>
-                    <input type="number" name="depots_terme_plus_1_an_membres" value="<?= number_format(getValeur($infos,'ZC13','montant', $donnees_calculees['depots_terme_plus_1_an_membres']),0,'','') ?>" class="<?= !isset($infos['ZC13'])?'calculated-value':'' ?>">
-                    <span style="font-size:0.7rem;"> ✓ auto: <?= number_format($donnees_calculees['depots_terme_plus_1_an_membres'],0,',',' ') ?></span>
-                </div>
-                <div class="filter-item">
-                    <label>ZC14 - Épargne régime spécial</label>
-                    <input type="number" name="epargne_regime_special" value="<?= number_format(getValeur($infos,'ZC14','montant', $donnees_calculees['epargne_regime_special']),0,'','') ?>" class="<?= !isset($infos['ZC14'])?'calculated-value':'' ?>">
-                    <span style="font-size:0.7rem;"> ✓ auto: <?= number_format($donnees_calculees['epargne_regime_special'],0,',',' ') ?></span>
-                </div>
-                <div class="filter-item">
-                    <label>ZC15 - Autres dépôts >1 an membres</label>
-                    <input type="number" name="autres_depots_plus_1_an_membres" value="<?= number_format(getValeur($infos,'ZC15','montant'),0,'','') ?>">
-                </div>
-            </div>
-            <div class="card-header" style="margin-top:16px;"><i class="fas fa-hand-holding-usd"></i> RECOUVREMENTS</div>
-            <div class="filters-row" style="margin-bottom:0;">
-                <div class="filter-item">
-                    <label>ZC16 - Recouvrements intervenus</label>
-                    <input type="number" name="recouvrements_prevus" value="<?= number_format(getValeur($infos,'ZC16','montant'),0,'','') ?>">
-                </div>
-                <div class="filter-item">
-                    <label>ZC17 - Recouvrements attendus</label>
-                    <input type="number" name="recouvrements_attendus" value="<?= number_format(getValeur($infos,'ZC17','montant'),0,'','') ?>">
-                </div>
-                <div class="filter-item">
-                    <button type="submit" class="btn-apply"><i class="fas fa-save"></i> Enregistrer</button>
-                </div>
+            <div style="margin-top:16px; text-align:right;">
+                <button type="submit" class="btn-apply"><i class="fas fa-save"></i> Enregistrer</button>
             </div>
         </form>
+    </div>
+
+    <!-- ===== TABLEAU RÉCAPITULATIF (affichage) ===== -->
+    <div class="card">
+        <div class="card-header"><i class="fas fa-table"></i> ÉTAT DES INFORMATIONS ANNEXES</div>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>CODE</th>
+                        <th>LIBELLÉS</th>
+                        <th class="text-right">VALEUR</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($liste_indicateurs as $ind): 
+                        $code = $ind['code'];
+                        $libelle = $ind['libelle'];
+                        $type = $ind['type'];
+                        $calcule_key = $ind['calcule'];
+                        $valeur = getValeur($infos, $code, $type, $calcule_key ? $donnees_calculees[$calcule_key] : null);
+                        $affichage = ($type === 'montant') ? number_format($valeur,0,',',' ') . ' F' : $valeur;
+                    ?>
+                        <tr>
+                            <td><?= $code ?></td>
+                            <td><?= htmlspecialchars($libelle) ?></td>
+                            <td class="text-right"><?= $affichage ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
 
     <div class="page-footer">
@@ -542,7 +577,7 @@ if ($format === 'pdf') {
         input.name = 'format';
         input.value = 'pdf';
         form.appendChild(input);
-        form.target = '_blank';
+        form.target = '_self';
         form.submit();
         form.target = '';
         form.removeChild(input);
@@ -550,27 +585,20 @@ if ($format === 'pdf') {
 
     function exporterExcel() {
         const wb = XLSX.utils.book_new();
-        const data = [['DIMF_2011 - INFORMATIONS ANNEXES'],['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],[],['Code','Indicateur','Valeur']];
-        const liste = [
-            ['ZC01','Encours engagements CT', getValeur($infos,'ZC01','montant')],
-            ['ZC02','Encours engagements MLT', getValeur($infos,'ZC02','montant')],
-            ['ZC03','Autres activités', getValeur($infos,'ZC03','montant')],
-            ['ZC04','Nb membres total', getValeur($infos,'ZC04','effectif', $donnees_calculees['nb_membres_total'])],
-            ['ZC05','Nb groupements', getValeur($infos,'ZC05','effectif')],
-            ['ZC06','Nb hommes', getValeur($infos,'ZC06','effectif', $donnees_calculees['nb_membres_hommes'])],
-            ['ZC07','Nb femmes', getValeur($infos,'ZC07','effectif', $donnees_calculees['nb_membres_femmes'])],
-            ['ZC08','Nb groupements bénéf.', getValeur($infos,'ZC08','effectif')],
-            ['ZC09','Nb usagers bénéf.', getValeur($infos,'ZC09','effectif')],
-            ['ZC10','Nb sociétaires bénéf.', getValeur($infos,'ZC10','effectif')],
-            ['ZC11','Population cible', getValeur($infos,'ZC11','effectif')],
-            ['ZC12','Dépôts >1 an inst. fin.', getValeur($infos,'ZC12','montant')],
-            ['ZC13','Dépôts terme >1 an membres', getValeur($infos,'ZC13','montant', $donnees_calculees['depots_terme_plus_1_an_membres'])],
-            ['ZC14','Épargne régime spécial', getValeur($infos,'ZC14','montant', $donnees_calculees['epargne_regime_special'])],
-            ['ZC15','Autres dépôts >1 an membres', getValeur($infos,'ZC15','montant')],
-            ['ZC16','Recouvrements intervenus', getValeur($infos,'ZC16','montant')],
-            ['ZC17','Recouvrements attendus', getValeur($infos,'ZC17','montant')]
+        const data = [
+            ['DIMF_2011 - INFORMATIONS ANNEXES'],
+            ['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],
+            [],
+            ['CODE','LIBELLÉS','VALEUR']
         ];
-        for (let i=0; i<liste.length; i++) data.push(liste[i]);
+        <?php foreach ($liste_indicateurs as $ind): 
+            $code = $ind['code'];
+            $type = $ind['type'];
+            $calcule_key = $ind['calcule'];
+            $valeur = getValeur($infos, $code, $type, $calcule_key ? $donnees_calculees[$calcule_key] : null);
+        ?>
+            data.push(['<?= $code ?>','<?= addslashes($ind['libelle']) ?>',<?= $type === 'montant' ? $valeur : $valeur ?>]);
+        <?php endforeach; ?>
         const ws = XLSX.utils.aoa_to_sheet(data);
         XLSX.utils.book_append_sheet(wb, ws, "INFOS_ANNEXES");
         XLSX.writeFile(wb, 'DIMF_2011_<?= $exercice ?>_<?= $type_periode ?>.xlsx');

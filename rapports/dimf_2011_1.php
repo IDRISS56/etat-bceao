@@ -1,6 +1,6 @@
 <?php
 // DIMF_2011_1.php - État des engagements par signature
-// FPDF intégré, gestion POST, Bootstrap, correction mb_convert_encoding
+// Utilise la table z_bceao_infos_annexes (existante) pour ZC18 et ZC19
 
 session_start();
 
@@ -9,6 +9,7 @@ session_start();
 // ============================================================
 require_once '../databases/database.php';
 require_once '../fpdf/fpdf.php';
+
 
 class PDF_DIMF extends FPDF {
     public $codeDimf  = 'DIMF';
@@ -76,6 +77,7 @@ class PDF_DIMF extends FPDF {
     }
 
     function TableRow($cols, $data, $style = '') {
+        $fill = false;
         switch ($style) {
             case 'subtotal':
                 $this->SetFillColor(248, 250, 252);
@@ -94,7 +96,7 @@ class PDF_DIMF extends FPDF {
         $this->SetDrawColor(226, 232, 240);
         $this->SetLineWidth(0.1);
         foreach ($cols as $i => $col) {
-            $val   = isset($data[$i]) ? $data[$i] : '';
+            $val = isset($data[$i]) ? $data[$i] : '';
             $align = isset($col['align']) ? $col['align'] : 'L';
             $this->Cell($col['w'], 5.5, self::u($val), 1, 0, $align, $fill);
         }
@@ -107,7 +109,7 @@ class PDF_DIMF extends FPDF {
 }
 
 // ============================================================
-// PARAMÈTRES (priorité POST > GET > défaut)
+// PARAMÈTRES
 // ============================================================
 $exercice     = isset($_POST['exercice'])     ? (int)$_POST['exercice']     : (isset($_GET['exercice']) ? (int)$_GET['exercice'] : date('Y'));
 $type_periode = isset($_POST['type_periode']) ? $_POST['type_periode']      : (isset($_GET['type_periode']) ? $_GET['type_periode'] : 'mensuel');
@@ -124,34 +126,28 @@ switch ($type_periode) {
 $date_fin_periode = date('Y-m-t', strtotime($exercice . '-' . str_pad($mois, 2, '0', STR_PAD_LEFT) . '-01'));
 
 // ============================================================
-// TRAITEMENT DU FORMULAIRE (POST)
+// TRAITEMENT POST (SAUVEGARDE)
 // ============================================================
 $message = '';
 $message_type = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] == 'save') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save') {
     try {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS engagements_signature (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            exercice INT NOT NULL,
-            type_engagement VARCHAR(50) NOT NULL,
-            montant DECIMAL(15,2) DEFAULT 0,
-            description TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_exercice_type (exercice, type_engagement)
-        )");
-
-        $stmtDel = $pdo->prepare("DELETE FROM engagements_signature WHERE exercice = :exercice");
+        // Supprimer les anciennes données pour ZC18 et ZC19
+        $stmtDel = $pdo->prepare("DELETE FROM z_bceao_infos_annexes WHERE exercice = :exercice AND code_indicateur IN ('ZC18', 'ZC19')");
         $stmtDel->execute([':exercice' => $exercice]);
 
-        $stmtIns = $pdo->prepare("INSERT INTO engagements_signature (exercice, type_engagement, montant, description) VALUES (:exercice, :type, :montant, :desc)");
-        $types = ['CT', 'MLT'];
-        foreach ($types as $type) {
-            $montant = (float)($_POST['montant_' . $type] ?? 0);
-            $description = $_POST['description_' . $type] ?? '';
-            $stmtIns->execute([':exercice' => $exercice, ':type' => $type, ':montant' => $montant, ':desc' => $description]);
-        }
-        $message = "Engagements enregistrés !";
+        // Insérer les nouvelles valeurs
+        $stmtIns = $pdo->prepare("INSERT INTO z_bceao_infos_annexes 
+            (exercice, code_indicateur, valeur_montant, statut) 
+            VALUES (:exercice, :code, :montant, 'actif')");
+
+        $montant_ct = (float) str_replace([' ', ','], ['', '.'], $_POST['montant_CT'] ?? 0);
+        $montant_mlt = (float) str_replace([' ', ','], ['', '.'], $_POST['montant_MLT'] ?? 0);
+
+        $stmtIns->execute([':exercice' => $exercice, ':code' => 'ZC18', ':montant' => $montant_ct]);
+        $stmtIns->execute([':exercice' => $exercice, ':code' => 'ZC19', ':montant' => $montant_mlt]);
+
+        $message = "Engagements enregistrés avec succès !";
         $message_type = "success";
     } catch (PDOException $e) {
         $message = "Erreur : " . $e->getMessage();
@@ -169,41 +165,60 @@ if (isset($_GET['msg'])) {
 }
 
 // ============================================================
-// RÉCUPÉRATION DES DONNÉES SAISIES
+// RÉCUPÉRATION DES VALEURS SAISIES (depuis z_bceao_infos_annexes)
 // ============================================================
-$engagements = ['CT' => ['montant' => 0, 'description' => ''], 'MLT' => ['montant' => 0, 'description' => '']];
+$valeurs_saisies = ['ZC18' => 0, 'ZC19' => 0];
 try {
-    $stmt = $pdo->prepare("SELECT * FROM engagements_signature WHERE exercice = :exercice");
+    $stmt = $pdo->prepare("SELECT code_indicateur, valeur_montant FROM z_bceao_infos_annexes 
+                           WHERE exercice = :exercice AND code_indicateur IN ('ZC18', 'ZC19') AND statut = 'actif'");
     $stmt->execute([':exercice' => $exercice]);
     foreach ($stmt->fetchAll() as $row) {
-        $engagements[$row['type_engagement']]['montant'] = (float)$row['montant'];
-        $engagements[$row['type_engagement']]['description'] = $row['description'];
+        $valeurs_saisies[$row['code_indicateur']] = (float)$row['valeur_montant'];
     }
 } catch (PDOException $e) {}
 
-// Calcul automatique depuis garanties
+// ============================================================
+// CALCUL AUTOMATIQUE DEPUIS LES GARANTIES
+// ============================================================
 $engagements_calcules = ['CT' => 0, 'MLT' => 0];
 try {
-    $stmt = $pdo->prepare("SELECT COALESCE(SUM(g.valeur_nette),0) as total FROM garanties g INNER JOIN dossiers d ON g.credit_id = d.dossier_id WHERE g.statut = 'actif' AND d.duree <= 12");
+    // Court terme : crédits avec durée <= 12 mois
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(g.valeur_nette),0) as total 
+        FROM garanties g 
+        INNER JOIN dossiers d ON g.credit_id = d.dossier_id 
+        WHERE g.statut = 'actif' AND d.duree <= 12");
     $stmt->execute();
     $engagements_calcules['CT'] = (float)$stmt->fetch()['total'];
-    $stmt = $pdo->prepare("SELECT COALESCE(SUM(g.valeur_nette),0) as total FROM garanties g INNER JOIN dossiers d ON g.credit_id = d.dossier_id WHERE g.statut = 'actif' AND d.duree > 12");
+
+    // Moyen/long terme : durée > 12 mois
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(g.valeur_nette),0) as total 
+        FROM garanties g 
+        INNER JOIN dossiers d ON g.credit_id = d.dossier_id 
+        WHERE g.statut = 'actif' AND d.duree > 12");
     $stmt->execute();
     $engagements_calcules['MLT'] = (float)$stmt->fetch()['total'];
 } catch (PDOException $e) {}
 
-$total_engagements = $engagements_calcules['CT'] + $engagements_calcules['MLT'];
+// Les valeurs affichées : si une valeur saisie existe, elle prévaut sur le calcul
+$affichage_ct = ($valeurs_saisies['ZC18'] > 0) ? $valeurs_saisies['ZC18'] : $engagements_calcules['CT'];
+$affichage_mlt = ($valeurs_saisies['ZC19'] > 0) ? $valeurs_saisies['ZC19'] : $engagements_calcules['MLT'];
+$total_engagements = $affichage_ct + $affichage_mlt;
 
-// Détail des garanties actives
+// Détail des garanties actives (pour information)
 $details_garanties = [];
 try {
-    $stmt = $pdo->prepare("SELECT garantie_id, libelle_garantie, code_type_garantie, valeur_nette, date_evaluation, date_expiration, d.duree as credit_duree FROM garanties g LEFT JOIN dossiers d ON g.credit_id = d.dossier_id WHERE g.statut = 'actif' ORDER BY g.valeur_nette DESC LIMIT 20");
+    $stmt = $pdo->prepare("SELECT garantie_id, libelle_garantie, code_type_garantie, valeur_nette, date_evaluation, date_expiration, d.duree as credit_duree 
+        FROM garanties g 
+        LEFT JOIN dossiers d ON g.credit_id = d.dossier_id 
+        WHERE g.statut = 'actif' 
+        ORDER BY g.valeur_nette DESC 
+        LIMIT 20");
     $stmt->execute();
     $details_garanties = $stmt->fetchAll();
 } catch (PDOException $e) {}
 
 // ============================================================
-// GÉNÉRATION PDF (si format=pdf)
+// GÉNÉRATION PDF
 // ============================================================
 $format = isset($_POST['format']) ? $_POST['format'] : (isset($_GET['format']) ? $_GET['format'] : 'html');
 
@@ -215,7 +230,7 @@ if ($format === 'pdf') {
         default:          $lib_periode = 'Annee ' . $exercice;
     }
 
-    $pdf = new PDF_DIMF('L', 'mm', 'A4');
+    $pdf = new PDF_DIMF('P', 'mm', 'A4');
     $pdf->AliasNbPages();
     $pdf->codeDimf  = 'DIMF_2011_1';
     $pdf->titreDimf = 'Engagements par signature';
@@ -229,17 +244,21 @@ if ($format === 'pdf') {
     $cols = [
         ['label' => 'CODE', 'w' => 20],
         ['label' => 'LIBELLÉ', 'w' => 100],
-        ['label' => 'Montant (FCFA)', 'w' => 45, 'align' => 'R']
+        ['label' => 'Montant (FCFA)', 'w' => 60, 'align' => 'R']
     ];
-    $pdf->SectionTitle('Engagements par signature (calculés)');
+    $pdf->SectionTitle('Engagements par signature');
     $pdf->TableHeader($cols);
-    $pdf->TableRow($cols, ['ZC18', 'Engagements à court terme (≤12 mois)', PDF_DIMF::montant($engagements_calcules['CT'])]);
-    $pdf->TableRow($cols, ['ZC19', 'Engagements à moyen et long termes (>12 mois)', PDF_DIMF::montant($engagements_calcules['MLT'])]);
-    $pdf->TableRow($cols, ['TOTAL', '', PDF_DIMF::montant($total_engagements)], 'total');
+    $pdf->TableRow($cols, ['ZC18', 'Engagements à court terme (≤12 mois)', PDF_DIMF::montant($affichage_ct)]);
+    $pdf->TableRow($cols, ['ZC19', 'Engagements à moyen et long termes (>12 mois)', PDF_DIMF::montant($affichage_mlt)]);
+    $pdf->TableRow($cols, ['', 'TOTAL', PDF_DIMF::montant($total_engagements)], 'total');
 
     $pdf->Output('I', 'DIMF_2011_1_Engagements_' . $exercice . '_' . $type_periode . '.pdf');
     exit;
 }
+
+// ============================================================
+// AFFICHAGE HTML
+// ============================================================
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -266,7 +285,7 @@ if ($format === 'pdf') {
         .filters-row { display:flex; flex-wrap:wrap; align-items:flex-end; gap:20px; }
         .filter-item { display:flex; flex-direction:column; gap:6px; }
         .filter-item label { font-size:0.7rem; font-weight:600; text-transform:uppercase; color:#4b5563; }
-        .filter-item select, .filter-item input, .filter-item textarea { border:1px solid #d1d5db; border-radius:12px; padding:8px 14px; font-size:0.85rem; }
+        .filter-item select, .filter-item input { border:1px solid #d1d5db; border-radius:12px; padding:8px 14px; font-size:0.85rem; }
         .btn-apply { background:#3b82f6; color:white; border:none; border-radius:40px; padding:8px 24px; cursor:pointer; }
         .table-wrapper { overflow-x:auto; }
         table { width:100%; border-collapse:collapse; font-size:0.85rem; }
@@ -277,6 +296,9 @@ if ($format === 'pdf') {
         .info-box { background:#eef2ff; border-left:4px solid #3b82f6; padding:16px 20px; border-radius:16px; display:flex; align-items:center; gap:14px; }
         .page-footer { text-align:center; font-size:0.75rem; color:#6b7280; margin-top:16px; }
         @media print { .btn-group, .page-footer, #filtersCard { display:none; } }
+        .input-group { display:flex; align-items:center; gap:8px; }
+        .input-group input { flex:1; }
+        .auto-badge { font-size:0.65rem; color:#16a34a; }
     </style>
 </head>
 <body>
@@ -342,40 +364,61 @@ if ($format === 'pdf') {
         </div>
     <?php endif; ?>
 
+    <!-- ===== TABLEAU DES ENGAGEMENTS ===== -->
     <div class="card">
-        <div class="card-header"><i class="fas fa-chart-simple"></i> ENGAGEMENTS PAR SIGNATURE (calculés)</div>
+        <div class="card-header"><i class="fas fa-chart-simple"></i> ENGAGEMENTS PAR SIGNATURE</div>
         <div class="table-wrapper">
             <table>
-                <thead><th>CODE</th><th>LIBELLÉ</th><th class="text-right">Montant (FCFA)</th></thead>
+                <thead>
+                    <tr><th>CODE</th><th>LIBELLÉ</th><th class="text-right">Montant (FCFA)</th></tr>
+                </thead>
                 <tbody>
-                    <tr><td class="text-center">ZC18</td><td>Engagements à court terme (≤12 mois)</td><td class="text-right"><?= number_format($engagements_calcules['CT'],0,',',' ') ?></td></tr>
-                    <tr><td class="text-center">ZC19</td><td>Engagements à moyen et long termes (>12 mois)</td><td class="text-right"><?= number_format($engagements_calcules['MLT'],0,',',' ') ?></td></tr>
-                    <tr class="total-row"><td colspan="2"><strong>TOTAL</strong></td><td class="text-right"><strong><?= number_format($total_engagements,0,',',' ') ?></strong></td></tr>
+                    <tr>
+                        <td>ZC18</td>
+                        <td>Encours des engagements par signature donnés à court terme (≤12 mois)</td>
+                        <td class="text-right"><?= number_format($affichage_ct,0,',',' ') ?></td>
+                    </tr>
+                    <tr>
+                        <td>ZC19</td>
+                        <td>Encours des engagements par signature donnés à moyen et long termes (>12 mois)</td>
+                        <td class="text-right"><?= number_format($affichage_mlt,0,',',' ') ?></td>
+                    </tr>
+                    <tr class="total-row">
+                        <td colspan="2"><strong>TOTAL</strong></td>
+                        <td class="text-right"><strong><?= number_format($total_engagements,0,',',' ') ?></strong></td>
+                    </tr>
                 </tbody>
             </table>
         </div>
+        <div style="margin-top:12px; font-size:0.8rem; color:#6b7280;">
+            <i class="fas fa-info-circle"></i> Les montants affichés sont calculés automatiquement à partir des garanties actives. 
+            Vous pouvez les modifier manuellement via le formulaire ci-dessous.
+        </div>
     </div>
 
+    <!-- ===== FORMULAIRE DE SAISIE ===== -->
     <div class="card">
-        <div class="card-header"><i class="fas fa-pen"></i> SAISIE MANUELLE</div>
+        <div class="card-header"><i class="fas fa-pen"></i> SAISIE MANUELLE DES MONTANTS</div>
         <form method="post">
             <input type="hidden" name="action" value="save">
             <div class="filters-row" style="margin-bottom:0;">
                 <div class="filter-item">
                     <label>ZC18 - Court terme (FCFA)</label>
-                    <input type="number" name="montant_CT" value="<?= number_format($engagements['CT']['montant'],0,'','') ?>">
-                </div>
-                <div class="filter-item">
-                    <label>Description CT</label>
-                    <textarea name="description_CT"><?= htmlspecialchars($engagements['CT']['description']) ?></textarea>
+                    <div class="input-group">
+                        <input type="text" name="montant_CT" value="<?= number_format($valeurs_saisies['ZC18'],0,',',' ') ?>" class="form-control form-control-sm">
+                        <?php if ($valeurs_saisies['ZC18'] == 0): ?>
+                            <span class="auto-badge"><i class="fas fa-calculator"></i> auto: <?= number_format($engagements_calcules['CT'],0,',',' ') ?></span>
+                        <?php endif; ?>
+                    </div>
                 </div>
                 <div class="filter-item">
                     <label>ZC19 - Moyen/long terme (FCFA)</label>
-                    <input type="number" name="montant_MLT" value="<?= number_format($engagements['MLT']['montant'],0,'','') ?>">
-                </div>
-                <div class="filter-item">
-                    <label>Description MLT</label>
-                    <textarea name="description_MLT"><?= htmlspecialchars($engagements['MLT']['description']) ?></textarea>
+                    <div class="input-group">
+                        <input type="text" name="montant_MLT" value="<?= number_format($valeurs_saisies['ZC19'],0,',',' ') ?>" class="form-control form-control-sm">
+                        <?php if ($valeurs_saisies['ZC19'] == 0): ?>
+                            <span class="auto-badge"><i class="fas fa-calculator"></i> auto: <?= number_format($engagements_calcules['MLT'],0,',',' ') ?></span>
+                        <?php endif; ?>
+                    </div>
                 </div>
                 <div class="filter-item">
                     <button type="submit" class="btn-apply"><i class="fas fa-save"></i> Enregistrer</button>
@@ -384,10 +427,11 @@ if ($format === 'pdf') {
         </form>
     </div>
 
+    <!-- ===== DÉTAIL DES GARANTIES ===== -->
     <div class="card">
         <div class="card-header"><i class="fas fa-list-ul"></i> DÉTAIL DES GARANTIES ACTIVES</div>
         <?php if(empty($details_garanties)): ?>
-            <div class="info-box">Aucune garantie active.</div>
+            <div class="info-box">Aucune garantie active trouvée.</div>
         <?php else: ?>
             <div class="table-wrapper">
                 <table>
@@ -396,16 +440,18 @@ if ($format === 'pdf') {
                     </thead>
                     <tbody>
                         <?php foreach($details_garanties as $g):
-                            $typeLabel = match($g['code_type_garantie']) { '01'=>'Hypothèque','02'=>'Nantissement','03'=>'Caution','04'=>'Gage', default=>'Autre' };
+                            $typeLabel = match($g['code_type_garantie']) { 
+                                '01'=>'Hypothèque', '02'=>'Nantissement', '03'=>'Caution', '04'=>'Gage', default=>'Autre' 
+                            };
                         ?>
                         <tr>
-                            <td><?= substr(htmlspecialchars($g['garantie_id']),0,8) ?>...<\/td>
-                            <td><?= htmlspecialchars($g['libelle_garantie']) ?><\/td>
-                            <td><?= $typeLabel ?><\/td>
-                            <td class="text-right"><?= number_format($g['valeur_nette'],0,',',' ') ?><\/td>
-                            <td><?= date('d/m/Y',strtotime($g['date_evaluation'])) ?><\/td>
-                            <td><?= $g['date_expiration']?date('d/m/Y',strtotime($g['date_expiration'])):'-' ?><\/td>
-                            <td><?= $g['credit_duree']?$g['credit_duree'].' mois':'-' ?><\/td>
+                            <td><?= substr(htmlspecialchars($g['garantie_id']),0,8) ?>…</td>
+                            <td><?= htmlspecialchars($g['libelle_garantie']) ?></td>
+                            <td><?= $typeLabel ?></td>
+                            <td class="text-right"><?= number_format($g['valeur_nette'],0,',',' ') ?></td>
+                            <td><?= date('d/m/Y',strtotime($g['date_evaluation'])) ?></td>
+                            <td><?= $g['date_expiration']?date('d/m/Y',strtotime($g['date_expiration'])):'-' ?></td>
+                            <td><?= $g['credit_duree']?$g['credit_duree'].' mois':'-' ?></td>
                         </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -463,7 +509,7 @@ if ($format === 'pdf') {
         input.name = 'format';
         input.value = 'pdf';
         form.appendChild(input);
-        form.target = '_blank';
+        form.target = '_self';
         form.submit();
         form.target = '';
         form.removeChild(input);
@@ -471,9 +517,15 @@ if ($format === 'pdf') {
 
     function exporterExcel() {
         const wb = XLSX.utils.book_new();
-        const data = [['DIMF_2011_1 - ENGAGEMENTS PAR SIGNATURE'],['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],[],['Code','Libellé','Montant calculé','Montant saisi','Description']];
-        data.push(['ZC18','Court terme',<?= $engagements_calcules['CT'] ?>,<?= $engagements['CT']['montant'] ?>,'<?= addslashes($engagements['CT']['description']) ?>']);
-        data.push(['ZC19','Moyen/long terme',<?= $engagements_calcules['MLT'] ?>,<?= $engagements['MLT']['montant'] ?>,'<?= addslashes($engagements['MLT']['description']) ?>']);
+        const data = [
+            ['DIMF_2011_1 - ENGAGEMENTS PAR SIGNATURE'],
+            ['Exercice','<?= $exercice ?>','Type','<?= $type_periode ?>'],
+            [],
+            ['CODE','LIBELLÉ','Montant']
+        ];
+        data.push(['ZC18','Engagements à court terme (≤12 mois)',<?= $affichage_ct ?>]);
+        data.push(['ZC19','Engagements à moyen et long termes (>12 mois)',<?= $affichage_mlt ?>]);
+        data.push(['','TOTAL',<?= $total_engagements ?>]);
         const ws = XLSX.utils.aoa_to_sheet(data);
         XLSX.utils.book_append_sheet(wb, ws, "ENGAGEMENTS");
         XLSX.writeFile(wb, 'DIMF_2011_1_<?= $exercice ?>_<?= $type_periode ?>.xlsx');
